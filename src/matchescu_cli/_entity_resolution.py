@@ -1,11 +1,10 @@
 import json
 import os
-from datetime import datetime
 from typing import Generator
 
 import click
 
-from ._utils import _print
+from ._utils import _print, MatchescuJSONEncoder
 
 
 def _get_file_paths(input_dir: str) -> Generator[str, None, None]:
@@ -16,15 +15,6 @@ def _get_file_paths(input_dir: str) -> Generator[str, None, None]:
             fpath = os.path.join(dir_path, file_name)
             _print(fpath)
             yield fpath
-
-
-class MatchescuJSONEncoder(json.JSONEncoder):
-    def default(self, obj):
-        if isinstance(obj, set):
-            return list(obj)
-        if isinstance(obj, datetime):
-            return obj.isoformat()
-        return super().default(obj)
 
 
 @click.command("entity-resolution")
