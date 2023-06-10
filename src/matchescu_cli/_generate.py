@@ -1,7 +1,11 @@
+import json
 import os.path
 import random
+from dataclasses import asdict
+
 import click
 
+from abstractions.data_structures import Clustering
 from ._utils import _print
 
 
@@ -25,7 +29,13 @@ from ._utils import _print
     required=True,
     default=2
 )
-def generate(input_file: str, count: int, output_directory: str):
+@click.option(
+    "-g",
+    "--gold-standard",
+    type=click.Path(file_okay=True, dir_okay=False, writable=True, resolve_path=True),
+    required=True,
+)
+def generate(input_file: str, count: int, output_directory: str, gold_standard: str):
     from abstractions.data_structures import Table
     from data_generators.tabular import random_sub_tables
 
@@ -43,5 +53,7 @@ def generate(input_file: str, count: int, output_directory: str):
         out_file_path = os.path.join(output_directory, out_file_name)
         _print("writing", out_file_path)
         table.save_csv(out_file_path)
+    with open(gold_standard, "w") as gs_file:
+        json.dump(asdict(Clustering.from_tables(*derived_data)), gs_file, indent=4)
     _print("golden master was generated")
 
