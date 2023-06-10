@@ -45,7 +45,7 @@ def match_entities(input_dir: str, threshold: float, output_file: str):
         Table.load_csv(file_path=path) for path in _get_file_paths(input_dir)
     ]
     datasets = [
-        [tuple(row) for row in table]
+        [row.values for row in table]
         for table in tables
     ]
     duplicates = find_duplicates_across(datasets, threshold)

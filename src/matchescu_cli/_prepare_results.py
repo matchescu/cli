@@ -21,10 +21,7 @@ def transform_results(input_file: str, output_file: str):
     with open(input_file, "r") as json_file:
         json_obj = json.load(json_file)
 
-    results = set()
-    for row in json_obj:
-        results.add((tuple(row[0]), tuple(row[1]), row[2]))
     from entity_resolution_results.ppjoin import transform_result
-    clustering = transform_result(results, exclude=[0])
+    clustering = transform_result(json_obj)
     with open(output_file, "w") as cluster_file:
         json.dump(asdict(clustering), cluster_file, indent=4)
