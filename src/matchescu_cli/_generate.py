@@ -35,13 +35,18 @@ from ._utils import _print
     type=click.Path(file_okay=True, dir_okay=False, writable=True, resolve_path=True),
     required=True,
 )
-def generate(input_file: str, count: int, output_directory: str, gold_standard: str):
+@click.option(
+    "-f", "--fixed", type=str, multiple=True
+)
+def generate(input_file: str, count: int, output_directory: str, gold_standard: str, fixed: list[str]):
     from abstractions.data_structures import Table
     from data_generators.tabular import random_sub_tables
 
     original_data = Table.load_csv(input_file)
     original_col_count = len(original_data.columns)
-    fixed_cols = set(random.choices(list(map(lambda x: x.name, original_data.columns)), k=original_col_count // 2))
+    fixed_cols = fixed or set(
+        random.choices(list(map(lambda x: x.name, original_data.columns)), k=original_col_count // 2)
+    )
     fixed_col_count = len(fixed_cols)
     derived_data = random_sub_tables(original_data, count, fixed_col_count+1, original_col_count, *fixed_cols)
 
