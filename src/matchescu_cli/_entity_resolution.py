@@ -29,7 +29,7 @@ def _get_file_paths(input_dir: str) -> Generator[str, None, None]:
     "--threshold",
     type=click.FLOAT,
     required=True,
-    default=0.6,
+    default=0,
 )
 @click.option(
     "-o",
@@ -48,6 +48,13 @@ def match_entities(input_dir: str, threshold: float, output_file: str):
         [row.values for row in table]
         for table in tables
     ]
+    union = set()
+    for table in tables:
+        union |= set(map(lambda x: x.name, table.columns))
+    intersection = union.intersection(*[set(map(lambda x: x.name, table.columns)) for table in tables])
+    reasonable_threshold = len(intersection) / len(union)
+
+    threshold = threshold if threshold != 0 else reasonable_threshold
     duplicates = find_duplicates_across(datasets, threshold)
     with open(output_file, "w") as result:
         result.write(json.dumps(duplicates, cls=MatchescuJSONEncoder, indent=4))
