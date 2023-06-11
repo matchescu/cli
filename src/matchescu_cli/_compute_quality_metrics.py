@@ -42,15 +42,15 @@ def compute_metrics(gold_standard: str, entity_resolution_results: str):
 
     with open("out/results.html", "w") as results_html:
         results_html.write("<html><body>")
+        bmd = basic_merge_distance(er_results, gold_standard)
         results_html.write(
-            f"<h1>ER Quality Evaluation</h1><h2>Merge distance</h2><p>Total merge distance: {basic_merge_distance(er_results, gold_standard)}</p>"
+            f"<h1>ER Quality Evaluation</h1><h2>Merge distance</h2><p>Total merge distance: {bmd}</p>"
         )
 
         results_html.write("<h2>Pairwise F1 Score</h2><table><thead>")
-        gs_count = len(gold_standard.clustered_rows[0])
-        er_count = len(er_results.clustered_rows[0])
-        results_html.write(f"<tr><th colspan={er_count}>Entity Resolution Clustering</th>")
-        results_html.write(f"<th colspan={gs_count}>Gold Standard</th><th>Score</th></tr></thead><tbody>")
+        count = len(gold_standard.feature_info)
+        results_html.write(f"<tr><th colspan={count}>Entity Resolution Clustering</th>")
+        results_html.write(f"<th colspan={count}>Gold Standard</th><th>Score</th></tr></thead><tbody>")
         for i, score in enumerate(pairwise_f1(er_results, gold_standard)):
             results_html.write(
                 _build_row(er_results.clustered_rows[i], gold_standard.clustered_rows[i], score, "{:.2%}")
@@ -58,8 +58,8 @@ def compute_metrics(gold_standard: str, entity_resolution_results: str):
         results_html.write("</tbody></table>")
 
         results_html.write("<h2>Variation of Information for each clustering</h2><table><thead>")
-        results_html.write(f"<tr><th colspan={er_count}>Entity Resolution Clustering</th>")
-        results_html.write(f"<th colspan={gs_count}>Gold Standard</th><th>Score</th></tr></thead><tbody>")
+        results_html.write(f"<tr><th colspan={count}>Entity Resolution Clustering</th>")
+        results_html.write(f"<th colspan={count}>Gold Standard</th><th>Score</th></tr></thead><tbody>")
         for i, score in enumerate(pairwise_f1(er_results, gold_standard)):
             results_html.write(
                 _build_row(er_results.clustered_rows[i], gold_standard.clustered_rows[i], score, "{:.2f}")
