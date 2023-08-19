@@ -40,7 +40,7 @@ from ._utils import _print
 )
 def generate(input_file: str, count: int, output_directory: str, gold_standard: str, fixed: list[str]):
     from abstractions.data_structures import Table
-    from data_generators.tabular import random_sub_tables
+    from data_generators.tables import random_sub_tables
 
     original_data = Table.load_csv(input_file)
     original_col_count = len(original_data.columns)

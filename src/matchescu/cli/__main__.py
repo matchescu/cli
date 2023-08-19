@@ -1,6 +1,6 @@
 import click
 
-import matchescu_cli._global_flags as flags
+import matchescu._global_flags as flags
 from ._generate import generate
 from ._entity_resolution import match_entities
 from ._prepare_results import transform_results

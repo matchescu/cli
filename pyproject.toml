@@ -4,12 +4,13 @@ version = "0.1.0"
 description = "Command-line interface to the Matchescu entity resolution comparison system"
 authors = ["Andrei Olar <andrei.olar@ubbcluj.ro>"]
 readme = "README.md"
-packages = [{include = "matchescu_cli", from = "src"}]
+packages = [{include = "matchescu", from = "src"}]
 
 [tool.poetry.dependencies]
 python = "^3.11"
 click = "^8.1.3"
-
+matchescu-abstractions = {path = "../abstractions"}
+matchescu-data-generators = {path = "../data-generators"}
 
 [tool.poetry.scripts]
 matchescu = "matchescu_cli.run:main"
