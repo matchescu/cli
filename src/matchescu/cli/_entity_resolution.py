@@ -1,28 +1,24 @@
 import json
-import os
-from typing import Generator
 
 import click
+import pandas
 
-from ._utils import _print, MatchescuJSONEncoder
+from matchescu.entity_matchers import ppjoin_adapter
+from matchescu.json import MatchescuEncoder
 
 
-def _get_file_paths(input_dir: str) -> Generator[str, None, None]:
-    for dir_path, __, file_names in os.walk(input_dir, True):
-        for file_name in file_names:
-            if not file_name.endswith(".csv"):
-                continue
-            fpath = os.path.join(dir_path, file_name)
-            _print(fpath)
-            yield fpath
+def _read_csv(file_path: str) -> pandas.DataFrame:
+    with open(file_path, "r") as fd:
+        return pandas.read_csv(fd)
 
 
 @click.command("entity-resolution")
 @click.option(
     "-i",
-    "--input-dir",
-    type=click.Path(exists=True, file_okay=False, dir_okay=True, readable=True, resolve_path=True),
+    "--input-file",
+    type=click.Path(exists=True, file_okay=True, dir_okay=False, readable=True, resolve_path=True),
     required=True,
+    multiple=True,
 )
 @click.option(
     "-t",
@@ -37,24 +33,10 @@ def _get_file_paths(input_dir: str) -> Generator[str, None, None]:
     type=click.Path(file_okay=True, dir_okay=False, writable=True, resolve_path=True),
     required=True
 )
-def match_entities(input_dir: str, threshold: float, output_file: str):
-    from abstractions.data_structures import Table
-    from entity_matchers.ppjoin import find_duplicates_across
-
-    tables = [
-        Table.load_csv(file_path=path) for path in _get_file_paths(input_dir)
-    ]
-    datasets = [
-        [row.values for row in table]
-        for table in tables
-    ]
-    union = set()
-    for table in tables:
-        union |= set(map(lambda x: x.name, table.columns))
-    intersection = union.intersection(*[set(map(lambda x: x.name, table.columns)) for table in tables])
-    reasonable_threshold = len(intersection) / len(union)
-
-    threshold = threshold if threshold != 0 else reasonable_threshold
-    duplicates = find_duplicates_across(datasets, threshold)
-    with open(output_file, "w") as result:
-        result.write(json.dumps(duplicates, cls=MatchescuJSONEncoder, indent=4))
+def match_entities(input_file: list[str], threshold: float, output_file: str):
+    data_frames = [df for df in map(_read_csv, input_file)]
+    er_result = ppjoin_adapter(data_frames)
+    with open(output_file, "w") as fd:
+        json.dump({
+            "fsm": er_result.fsm,
+        }, fd, indent=2, cls=MatchescuEncoder)

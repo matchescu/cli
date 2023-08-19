@@ -28,6 +28,20 @@ files = [
 ]
 
 [[package]]
+name = "entity-resolution-measurements"
+version = "0.1.0"
+description = ""
+category = "main"
+optional = false
+python-versions = "^3.11"
+files = []
+develop = false
+
+[package.source]
+type = "directory"
+url = "../entity-resolution-measurements"
+
+[[package]]
 name = "matchescu-abstractions"
 version = "0.1.0"
 description = ""
@@ -216,4 +230,4 @@ files = [
 [metadata]
 lock-version = "2.0"
 python-versions = "^3.11"
-content-hash = "38158cf2c867807a6e6e8324f072bf0dd48703c784b7e864e08e45679f5a9346"
+content-hash = "3b3f0ac0d6454a44ca7b89fa48aa02591a7a9d54b6e2e421a8921fffe18da323"
