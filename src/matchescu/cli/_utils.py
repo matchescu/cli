@@ -1,7 +1,7 @@
 import json
 from datetime import datetime
 
-import matchescu._global_flags as flags
+import matchescu.cli._global_flags as flags
 
 
 def _print(*args):
