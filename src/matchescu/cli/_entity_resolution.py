@@ -39,4 +39,5 @@ def match_entities(input_file: list[str], threshold: float, output_file: str):
     with open(output_file, "w") as fd:
         json.dump({
             "fsm": er_result.fsm,
+            "algebraic": er_result.algebraic,
         }, fd, indent=2, cls=MatchescuEncoder)
