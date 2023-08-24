@@ -8,6 +8,8 @@ import json
 from matchescu.metrics.algebraic import extract_algebraic_result_model, twi, rand_index, adjusted_rand_index, \
     pair_precision, pair_recall, pair_comparison_measure, cluster_precision, cluster_recall, cluster_comparison_measure
 from matchescu.metrics.fsm import extract_fsm_result_model, precision, recall, f1
+from matchescu.metrics.serf import extract_serf_result_model, basic_merge_distance, pairwise_f1, \
+    variation_of_information, pairwise_precision, pairwise_recall
 
 INPUT_FILE = click.Path(exists=True, file_okay=True, dir_okay=False, resolve_path=True, readable=True)
 
@@ -50,9 +52,24 @@ def _compute_algebraic_metrics(
     print("cluster comparison measure:", cluster_comparison_measure(truth, result))
 
 
+def _compute_serf_metrics(
+        ground_truth_obj: dict[str, Iterable[Iterable[Iterable]]],
+        result_obj: dict[str, Iterable[Iterable[Iterable]]],
+):
+    truth = extract_serf_result_model(ground_truth_obj[ModelType.SERF])
+    result = extract_serf_result_model(result_obj[ModelType.SERF])
+
+    print("merge distance:", basic_merge_distance(truth, result))
+    print("pairwise precision:", pairwise_precision(truth, result))
+    print("pairwise recall:", pairwise_recall(truth, result))
+    print("pairwise f1:", pairwise_f1(truth, result))
+    print("variation of information:", variation_of_information(truth, result))
+
+
 METRICS = {
     ModelType.FSM: _compute_fsm_metrics,
-    ModelType.ALG: _compute_algebraic_metrics
+    ModelType.ALG: _compute_algebraic_metrics,
+    ModelType.SERF: _compute_serf_metrics,
 }
 
 

@@ -5,6 +5,7 @@ import click
 import pandas
 
 from matchescu.data_generators.tables import SplitTableRandomly
+from ._sample_merge_func import merge_as_sets
 from ._utils import _print
 from ..json import MatchescuEncoder
 
@@ -40,7 +41,7 @@ from ..json import MatchescuEncoder
 )
 def generate(input_file: str, count: int, output_directory: str, gold_standard: str, fixed: list[str]):
     df = pandas.read_csv(input_file, header=0, encoding_errors="ignore")
-    splitter = SplitTableRandomly(count, fixed)
+    splitter = SplitTableRandomly(count, fixed, merge_function=merge_as_sets)
     derived_data = splitter(df)
     if not os.path.exists(output_directory):
         os.mkdir(output_directory)
@@ -53,6 +54,7 @@ def generate(input_file: str, count: int, output_directory: str, gold_standard: 
         json.dump({
             "fsm": splitter.ground_truth.fsm,
             "algebraic": splitter.ground_truth.algebraic,
+            "serf": splitter.ground_truth.serf
         }, gs_file, cls=MatchescuEncoder, indent=2)
     _print("golden master was generated")
 
