@@ -3,7 +3,7 @@ import json
 import click
 import pandas
 
-from matchescu.cli._sample_merge_func import merge_as_sets
+from matchescu.cli._sample_merge_func import simple_merge
 from matchescu.entity_matchers import ppjoin_adapter
 from matchescu.json import MatchescuEncoder
 
@@ -36,7 +36,7 @@ def _read_csv(file_path: str) -> pandas.DataFrame:
 )
 def match_entities(input_file: list[str], threshold: float, output_file: str):
     data_frames = [df for df in map(_read_csv, input_file)]
-    er_result = ppjoin_adapter(data_frames, threshold, merge_function=merge_as_sets)
+    er_result = ppjoin_adapter(data_frames, threshold, merge_function=simple_merge)
     with open(output_file, "w") as fd:
         json.dump({
             "fsm": er_result.fsm,

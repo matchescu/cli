@@ -5,7 +5,7 @@ import click
 import pandas
 
 from matchescu.data_generators.tables import SplitTableRandomly
-from ._sample_merge_func import merge_as_sets
+from ._sample_merge_func import simple_merge
 from ._utils import _print
 from ..json import MatchescuEncoder
 
@@ -41,7 +41,7 @@ from ..json import MatchescuEncoder
 )
 def generate(input_file: str, count: int, output_directory: str, gold_standard: str, fixed: list[str]):
     df = pandas.read_csv(input_file, header=0, encoding_errors="ignore")
-    splitter = SplitTableRandomly(count, fixed, merge_function=merge_as_sets)
+    splitter = SplitTableRandomly(count, fixed, merge_function=simple_merge)
     derived_data = splitter(df)
     if not os.path.exists(output_directory):
         os.mkdir(output_directory)
