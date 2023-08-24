@@ -17,7 +17,7 @@ def merge_as_sets(a: Record, b: Record) -> Record:
         merge_val.update(
             {val: None for val in b_field} if isinstance(b_field, (list, tuple, set, dict)) else {b_field: None}
         )
-        result.append(tuple(val for val in merge_val) if len(merge_val) > 1 else a_field)
+        result.append(tuple(val for val in merge_val))
 
     if common_item_count < len(a):
         for i in range(common_item_count, max_item_count):
