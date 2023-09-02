@@ -56,14 +56,14 @@ def _compute_serf_metrics(
         ground_truth_obj: dict[str, Iterable[Iterable[Iterable]]],
         result_obj: dict[str, Iterable[Iterable[Iterable]]],
 ):
-    truth = extract_serf_result_model(ground_truth_obj[ModelType.SERF])
+    standard = extract_serf_result_model(ground_truth_obj[ModelType.SERF])
     result = extract_serf_result_model(result_obj[ModelType.SERF])
 
-    print("merge distance:", basic_merge_distance(truth, result))
-    print("pairwise precision:", pairwise_precision(truth, result))
-    print("pairwise recall:", pairwise_recall(truth, result))
-    print("pairwise f1:", pairwise_f1(truth, result))
-    print("variation of information:", variation_of_information(truth, result))
+    print("merge distance:", basic_merge_distance(result, standard))
+    print("pairwise precision:", pairwise_precision(result, standard))
+    print("pairwise recall:", pairwise_recall(result, standard))
+    print("pairwise f1:", pairwise_f1(result, standard))
+    print("variation of information:", variation_of_information(result, standard))
 
 
 METRICS = {
