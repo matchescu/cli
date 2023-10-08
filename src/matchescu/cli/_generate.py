@@ -1,13 +1,24 @@
 import json
 import os.path
+from math import isnan
+from numbers import Number
 
 import click
 import pandas
 
-from matchescu.data_generators.tables import SplitTableRandomly
+from matchescu.data_generators.tables import SplitTable
 from ._sample_merge_func import simple_merge
 from ._utils import _print
 from ..json import MatchescuEncoder
+
+
+def _cleanup(value):
+    if isinstance(value, Number):
+        if isnan(value):
+            return ""
+    if value is None:
+        return ""
+    return str(value)
 
 
 @click.command("generate")
@@ -24,24 +35,19 @@ from ..json import MatchescuEncoder
     required=True,
 )
 @click.option(
-    "-n",
-    "--count",
-    type=click.INT,
-    required=True,
-    default=2
-)
-@click.option(
     "-g",
     "--gold-standard",
     type=click.Path(file_okay=True, dir_okay=False, writable=True, resolve_path=True),
     required=True,
 )
 @click.option(
-    "-f", "--fixed", type=str, multiple=True
+    "-c", "--cols", type=str, multiple=True
 )
-def generate(input_file: str, count: int, output_directory: str, gold_standard: str, fixed: list[str]):
+def generate(input_file: str, output_directory: str, gold_standard: str, cols: list[str]):
     df = pandas.read_csv(input_file, header=0, encoding_errors="ignore")
-    splitter = SplitTableRandomly(count, fixed, merge_function=simple_merge)
+    df = df.applymap(_cleanup)
+    col_lists = list(map(lambda x: x.split(","), cols))
+    splitter = SplitTable(col_lists, merge_function=simple_merge)
     derived_data = splitter(df)
     if not os.path.exists(output_directory):
         os.mkdir(output_directory)

@@ -1,4 +1,6 @@
 import json
+from math import isnan
+from numbers import Number
 
 import click
 import pandas
@@ -8,9 +10,18 @@ from matchescu.entity_matchers import ppjoin_adapter
 from matchescu.json import MatchescuEncoder
 
 
+def _cleanup(value):
+    if isinstance(value, Number):
+        if isnan(value):
+            return ""
+    if value is None:
+        return ""
+    return str(value)
+
+
 def _read_csv(file_path: str) -> pandas.DataFrame:
-    with open(file_path, "r") as fd:
-        return pandas.read_csv(fd)
+    df = pandas.read_csv(file_path, encoding_errors="ignore")
+    return df.applymap(_cleanup)
 
 
 @click.command("entity-resolution")
