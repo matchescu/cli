@@ -19,10 +19,8 @@ def main(verbose):
     flags.VERBOSE = verbose
 
 
-if __name__ == "__main__":
-    main.add_command(generate, "generate")
-    main.add_command(match_entities, "entity-resolution")
-    main.add_command(compute_metrics, "compute-metrics")
-    # main.add_command(transform_results, "transform-err")
+main.add_command(generate, "generate")
+main.add_command(match_entities, "entity-resolution")
+main.add_command(compute_metrics, "compute-metrics")
 
-    main()
+main()
