@@ -4,6 +4,7 @@ from numbers import Number
 
 import click
 import pandas
+from matchescu.adt.entity_resolution_result import EntityResolutionResult
 
 from matchescu.cli._sample_merge_func import simple_merge
 from matchescu.entity_matchers import ppjoin_adapter
@@ -28,7 +29,9 @@ def _read_csv(file_path: str) -> pandas.DataFrame:
 @click.option(
     "-i",
     "--input-file",
-    type=click.Path(exists=True, file_okay=True, dir_okay=False, readable=True, resolve_path=True),
+    type=click.Path(
+        exists=True, file_okay=True, dir_okay=False, readable=True, resolve_path=True
+    ),
     required=True,
     multiple=True,
 )
@@ -43,14 +46,23 @@ def _read_csv(file_path: str) -> pandas.DataFrame:
     "-o",
     "--output-file",
     type=click.Path(file_okay=True, dir_okay=False, writable=True, resolve_path=True),
-    required=True
+    required=True,
 )
-def match_entities(input_file: list[str], threshold: float, output_file: str):
-    data_frames = [df for df in map(_read_csv, input_file)]
-    er_result = ppjoin_adapter(data_frames, threshold, merge_function=simple_merge)
+def main(input_file: list[str], threshold: float, output_file: str):
+    er_result = match_entities(input_file, threshold)
     with open(output_file, "w") as fd:
-        json.dump({
-            "fsm": er_result.fsm,
-            "algebraic": er_result.algebraic,
-            "serf": er_result.serf,
-        }, fd, indent=2, cls=MatchescuEncoder)
+        json.dump(
+            {
+                "fsm": er_result.fsm,
+                "algebraic": er_result.algebraic,
+                "serf": er_result.serf,
+            },
+            fd,
+            indent=2,
+            cls=MatchescuEncoder,
+        )
+
+
+def match_entities(input_file: list[str], threshold: float) -> EntityResolutionResult:
+    data_frames = [df for df in map(_read_csv, input_file)]
+    return ppjoin_adapter(data_frames, threshold, merge_function=simple_merge)
