@@ -1,7 +1,7 @@
 import json
 import sys
 from enum import Enum
-from typing import Iterable
+from typing import Iterable, Any
 
 import click
 
@@ -102,18 +102,22 @@ METRICS = {
     "-t", "--model-type", type=click.Choice(ModelType), required=True, default="fsm"
 )
 def main(gold_standard: str, entity_resolution_results: str, model_type: ModelType):
+    with open(gold_standard, "r") as gold_standard_json:
+        ground_truth_obj = json.load(gold_standard_json)
+    with open(entity_resolution_results, "r") as err_json:
+        result_obj = json.load(err_json)
     for metric_name, value in compute_metrics(
-        gold_standard, entity_resolution_results, model_type
+        ground_truth_obj, result_obj, model_type
     ).items():
         print(f"{metric_name}:", value)
 
 
 def compute_metrics(
-    gold_standard: str, entity_resolution_results: str, model_type: ModelType
+    gold_standard: dict[str, Any],
+    entity_resolution_results: dict[str, Any],
+    model_type: ModelType,
 ) -> dict[str, float]:
-    with open(gold_standard, "r") as gold_standard_json:
-        ground_truth_obj = json.load(gold_standard_json)
-    if model_type not in ground_truth_obj:
+    if model_type not in gold_standard:
         print(
             "The",
             model_type,
@@ -121,9 +125,7 @@ def compute_metrics(
             file=sys.stderr,
         )
         sys.exit(1)
-    with open(entity_resolution_results, "r") as err_json:
-        result_obj = json.load(err_json)
-    if model_type not in result_obj:
+    if model_type not in entity_resolution_results:
         print(
             "The",
             model_type,
@@ -136,4 +138,4 @@ def compute_metrics(
         sys.exit(1)
 
     quality_eval = METRICS[model_type]
-    return quality_eval(ground_truth_obj, result_obj)
+    return quality_eval(gold_standard, entity_resolution_results)

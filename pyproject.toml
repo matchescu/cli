@@ -14,6 +14,7 @@ entity-resolution-measurements = {path = "../metrics"}
 entity-matchers = {path = "../entity-matchers"}
 matchescu-abstractions = {path = "../abstractions"}
 matchescu-data-generators = {path = "../data-generators"}
+plotly = "^5.17.0"
 
 [tool.poetry.scripts]
 matchescu = "matchescu.cli.__main__:main"

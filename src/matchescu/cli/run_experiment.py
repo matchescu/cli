@@ -1,8 +1,13 @@
+import json
+from dataclasses import asdict
 from pathlib import Path
 
-from matchescu.cli._generate import generate
-from matchescu.cli._entity_resolution import match_entities
+import pandas as pd
+import plotly.express as px
+
 from matchescu.cli._compute_quality_metrics import compute_metrics, ModelType
+from matchescu.cli._entity_resolution import match_entities
+from matchescu.cli._generate import generate
 
 repo_parent_dir = Path(__file__).parent.parent.parent.parent.parent
 data_dir = repo_parent_dir / "data"
@@ -24,7 +29,20 @@ if __name__ == "__main__":
     input_files = [
         str((data_dir / f"{idx:05}-sub-Buy.csv").absolute()) for idx in range(1, 3)
     ]
+    df = pd.DataFrame()
+    with open(gold_standard) as f:
+        ground_truth = json.load(f)
     for threshold in range(0, 100, 10):
         t = threshold / 100
-        match_entities(input_files, t)
-        compute_metrics(gold_standard, output_file, ModelType.FSM)
+        result = match_entities(input_files, t)
+        row = compute_metrics(ground_truth, asdict(result), ModelType.FSM)
+        df = pd.concat([df, pd.DataFrame(row, index=[t])])
+    fig = px.line(
+        df,
+        labels={
+            "index": "Jaccard Threshold (t)",
+            "value": "Quality Evaluator Value",
+            "variable": "Quality Evaluator",
+        },
+    )
+    fig.show()
