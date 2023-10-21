@@ -29,20 +29,21 @@ if __name__ == "__main__":
     input_files = [
         str((data_dir / f"{idx:05}-sub-Buy.csv").absolute()) for idx in range(1, 3)
     ]
-    df = pd.DataFrame()
     with open(gold_standard) as f:
         ground_truth = json.load(f)
-    for threshold in range(0, 100, 10):
-        t = threshold / 100
-        result = match_entities(input_files, t)
-        row = compute_metrics(ground_truth, asdict(result), ModelType.FSM)
-        df = pd.concat([df, pd.DataFrame(row, index=[t])])
-    fig = px.line(
-        df,
-        labels={
-            "index": "Jaccard Threshold (t)",
-            "value": "Quality Evaluator Value",
-            "variable": "Quality Evaluator",
-        },
-    )
-    fig.show()
+    for model_type in ModelType:
+        df = pd.DataFrame()
+        for threshold in range(0, 100):
+            t = threshold / 100
+            result = match_entities(input_files, t)
+            row = compute_metrics(ground_truth, asdict(result), model_type)
+            df = pd.concat([df, pd.DataFrame(row, index=[t])])
+        fig = px.line(
+            df,
+            labels={
+                "index": "Jaccard Threshold (t)",
+                "value": "Measurement",
+                "variable": f"{model_type} Evaluator",
+            },
+        )
+        fig.show()

@@ -33,9 +33,17 @@ INPUT_FILE = click.Path(
 
 
 class ModelType(str, Enum):
+    __DESC = {
+        "fsm": "Fellegi-Sunter",
+        "serf": "Stanford Entity Resolution Framework",
+        "algebraic": "Algebraic Model",
+    }
     FSM = "fsm"
     SERF = "serf"
     ALG = "algebraic"
+
+    def __str__(self):
+        return self.__DESC[self.value]
 
 
 def _compute_fsm_metrics(
