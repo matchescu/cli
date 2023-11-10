@@ -6,7 +6,6 @@ from typing import Iterable, Any
 import click
 
 from matchescu.metrics.algebraic import (
-    extract_algebraic_result_model,
     twi,
     rand_index,
     adjusted_rand_index,
@@ -60,12 +59,21 @@ def _compute_fsm_metrics(
     }
 
 
+def _convert_to_algebraic(
+    input_data: Iterable[Iterable[Iterable]],
+) -> list[set[tuple]]:
+    return [
+        set(tuple(v for v in partition_item) for partition_item in partition_class)
+        for partition_class in input_data
+    ]
+
+
 def _compute_algebraic_metrics(
     ground_truth_obj: dict[str, Iterable[Iterable[Iterable]]],
     result_obj: dict[str, Iterable[Iterable[Iterable]]],
 ) -> dict[str, float]:
-    truth = extract_algebraic_result_model(ground_truth_obj[ModelType.ALG])
-    result = extract_algebraic_result_model(result_obj[ModelType.ALG])
+    truth = _convert_to_algebraic(ground_truth_obj[ModelType.ALG])
+    result = _convert_to_algebraic(result_obj[ModelType.ALG])
 
     return {
         "twi": twi(truth, result),
