@@ -1,26 +1,66 @@
 import json
+import logging
+import pickle
+import sys
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import asdict
+from functools import partial
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
 from plotly.validators.scatter.marker import SymbolValidator
 
+from matchescu.adt.entity_resolution_result import EntityResolutionResult
 from matchescu.cli._compute_quality_metrics import compute_metrics, ModelType
 from matchescu.cli._entity_resolution import match_entities
 from matchescu.cli._generate import generate
+from matchescu.common.partitioning import compute_partition
 
 repo_parent_dir = Path(__file__).parent.parent.parent.parent.parent
 data_dir = repo_parent_dir / "data"
-input_file = data_dir / "Buy.csv"
+abt_file = data_dir / "abt-buy" / "Abt.csv"
+buy_file = data_dir / "abt-buy" / "Buy.csv"
+ideal_mapping_file = data_dir / "abt-buy" / "abt_buy_perfectMapping.csv"
+gt_file = data_dir / "abt-buy" / "gt.json"
+er_file = data_dir / "abt-buy" / "er.json"
+
+generator_input_file = data_dir / "Buy.csv"
 output_directory = data_dir
 gold_standard = str((output_directory / "Buy-ground-truth.json").absolute())
 output_file = str((output_directory / "Buy-result.json").absolute())
 
-if __name__ == "__main__":
+
+def _generate_abt_buy_ground_truth():
+    abt = pd.read_csv(abt_file, header=0, index_col="id", encoding_errors="ignore")
+    buy = pd.read_csv(buy_file, header=0, index_col="id", encoding_errors="ignore")
+    mapping = pd.read_csv(ideal_mapping_file, header=0)
+    pair_list = []
+    input_set = {}
+    for index, link in mapping.iterrows():
+        id_abt = link["idAbt"]
+        id_buy = link["idBuy"]
+        abt_ref = tuple(map(str, (*abt.loc[id_abt], id_abt)))
+        buy_ref = tuple(map(str, (*buy.loc[id_buy], id_buy)))
+        pair = (abt_ref, buy_ref)
+        pair_list.append(pair)
+        input_set[abt_ref] = None
+        input_set[buy_ref] = None
+
+    gt = EntityResolutionResult()
+    gt.fsm = pair_list
+    gt.algebraic = compute_partition(list(input_set), pair_list)
+    return {"fsm": gt.fsm, "algebraic": gt.algebraic}
+
+
+def _get_abt_buy():
+    return [str(x.absolute()) for x in [abt_file, buy_file]]
+
+
+def _load_synthetic_datasets():
     generate(
-        str(input_file.absolute()),
+        str(generator_input_file.absolute()),
         str(output_directory.absolute()),
         gold_standard,
         [
@@ -28,25 +68,45 @@ if __name__ == "__main__":
             "description,name,price,id",
         ],
     )
-    input_files = [
-        str((data_dir / f"{idx:05}-sub-Buy.csv").absolute()) for idx in range(1, 3)
-    ]
+
     with open(gold_standard) as f:
-        ground_truth = json.load(f)
-    for model_type in ModelType:
+        return json.load(f)
+
+
+def _get_synthetic_input_files():
+    return [str((data_dir / f"{idx:05}-sub-Buy.csv").absolute()) for idx in range(1, 3)]
+
+
+if __name__ == "__main__":
+    logging.basicConfig(stream=sys.stdout, level=logging.INFO)
+    pool = ProcessPoolExecutor(32)
+    ground_truth = _generate_abt_buy_ground_truth()
+    input_files = _get_abt_buy()
+    results: dict[float, dict[ModelType, Any]] = {
+        threshold: result
+        for threshold, result in pool.map(
+            partial(match_entities, input_file=input_files), (x / 100 for x in range(0, 100, 1))
+        )
+    }
+
+    metrics = {}
+    for model_type in [ModelType.FSM, ModelType.ALG]:
         df = pd.DataFrame()
-        for threshold in range(0, 100):
-            t = threshold / 100
-            result = match_entities(input_files, t)
-            row = compute_metrics(ground_truth, asdict(result), model_type)
+        futures = {
+            t: pool.submit(compute_metrics, ground_truth, asdict(result), model_type)
+            for t, result in results.items()
+        }
+        for t, future in futures.items():
+            row = future.result()
             df = pd.concat([df, pd.DataFrame(row, index=[t])])
+
         fig = px.scatter(
-            df[::5],
+            df,
             labels={
                 "index": "Jaccard Threshold (t)",
                 "value": "Measurement",
                 "variable": f"{model_type} Evaluator",
-            }
+            },
         )
         tick_size = 20
         symbols = [
@@ -77,6 +137,6 @@ if __name__ == "__main__":
                 ticks="outside",
                 tickfont=dict(size=12, color="black"),
             ),
-            showlegend=True
+            showlegend=True,
         )
         fig.show()

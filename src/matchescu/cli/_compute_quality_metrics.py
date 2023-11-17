@@ -5,6 +5,7 @@ from typing import Iterable, Any
 
 import click
 
+from matchescu.instrumentation.timer import timer
 from matchescu.metrics.algebraic import (
     twi,
     rand_index,
@@ -128,6 +129,7 @@ def main(gold_standard: str, entity_resolution_results: str, model_type: ModelTy
         print(f"{metric_name}:", value)
 
 
+@timer("compute-metrics")
 def compute_metrics(
     gold_standard: dict[str, Any],
     entity_resolution_results: dict[str, Any],
