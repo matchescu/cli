@@ -2,7 +2,7 @@ import json
 import logging
 import pickle
 import sys
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from dataclasses import asdict
 from functools import partial
 from pathlib import Path
@@ -58,14 +58,14 @@ def _get_abt_buy():
     return [str(x.absolute()) for x in [abt_file, buy_file]]
 
 
-def _load_synthetic_datasets():
+def _generate_miniature_ground_truth():
     generate(
         str(generator_input_file.absolute()),
         str(output_directory.absolute()),
         gold_standard,
         [
-            "name,manufacturer",
-            "description,name,price,id",
+            "name,manufacturer,price,id",
+            "description,name,id",
         ],
     )
 
@@ -73,19 +73,20 @@ def _load_synthetic_datasets():
         return json.load(f)
 
 
-def _get_synthetic_input_files():
+def _get_mini_dataset():
     return [str((data_dir / f"{idx:05}-sub-Buy.csv").absolute()) for idx in range(1, 3)]
 
 
 if __name__ == "__main__":
     logging.basicConfig(stream=sys.stdout, level=logging.INFO)
-    pool = ProcessPoolExecutor(32)
-    ground_truth = _generate_abt_buy_ground_truth()
-    input_files = _get_abt_buy()
+    pool = ThreadPoolExecutor(1)
+    ground_truth = _generate_miniature_ground_truth()
+    input_files = _get_mini_dataset()
     results: dict[float, dict[ModelType, Any]] = {
         threshold: result
         for threshold, result in pool.map(
-            partial(match_entities, input_file=input_files), (x / 100 for x in range(0, 100, 1))
+            partial(match_entities, input_file=input_files),
+            (x / 100 for x in range(0, 100, 1)),
         )
     }
 
@@ -101,7 +102,7 @@ if __name__ == "__main__":
             df = pd.concat([df, pd.DataFrame(row, index=[t])])
 
         fig = px.scatter(
-            df,
+            df[::5],
             labels={
                 "index": "Jaccard Threshold (t)",
                 "value": "Measurement",

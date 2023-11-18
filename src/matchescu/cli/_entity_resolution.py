@@ -6,7 +6,6 @@ import click
 import pandas
 from matchescu.adt.entity_resolution_result import EntityResolutionResult
 
-from matchescu.cli._sample_merge_func import simple_merge
 from matchescu.entity_matchers import ppjoin_adapter
 from matchescu.instrumentation.timer import timer
 from matchescu.json import MatchescuEncoder
@@ -23,11 +22,16 @@ def _cleanup(value):
 
 def _read_csv(file_path: str) -> pandas.DataFrame:
     df = pandas.read_csv(file_path, encoding_errors="ignore")
-    cols = df.columns.tolist()
-    idx = cols.index("id")
-    if idx >= 0:
-        cols = cols[-idx+1:] + cols[:-idx+1]
-    df = df[cols]
+    try:
+        column_names = df.columns.tolist()
+        idx = column_names.index("id")
+        if idx < len(column_names)-1:
+            # move id column at the end
+            cols = df.columns[-idx + 1:] + df.columns[: -idx + 1]
+            df = df[cols]
+    except ValueError:
+        pass
+
     return df.applymap(_cleanup)
 
 
@@ -70,6 +74,8 @@ def main(input_file: list[str], threshold: float, output_file: str):
 
 
 @timer("match-entities")
-def match_entities(threshold: float, input_file: list[str]) -> tuple[float, EntityResolutionResult]:
+def match_entities(
+    threshold: float, input_file: list[str]
+) -> tuple[float, EntityResolutionResult]:
     data_frames = [df for df in map(_read_csv, input_file)]
     return threshold, ppjoin_adapter(data_frames, threshold)
