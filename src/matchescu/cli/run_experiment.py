@@ -102,7 +102,7 @@ if __name__ == "__main__":
             df = pd.concat([df, pd.DataFrame(row, index=[t])])
 
         fig = px.scatter(
-            df[::5],
+            df[::3],
             labels={
                 "index": "Jaccard Threshold (t)",
                 "value": "Measurement",
