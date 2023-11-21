@@ -27,7 +27,7 @@ def _read_csv(file_path: str) -> pandas.DataFrame:
         idx = column_names.index("id")
         if idx < len(column_names)-1:
             # move id column at the end
-            cols = df.columns[-idx + 1:] + df.columns[: -idx + 1]
+            cols = column_names[-idx + 1:] + column_names[: -idx + 1]
             df = df[cols]
     except ValueError:
         pass

@@ -1,13 +1,12 @@
 import json
 import logging
-import pickle
 import sys
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import asdict
-from enum import Enum
+from enum import StrEnum
 from functools import partial
 from pathlib import Path
-from typing import Any
+from typing import Protocol, ClassVar, Dict
 
 import click
 import pandas as pd
@@ -32,6 +31,12 @@ generator_input_file = data_dir / "Buy.csv"
 output_directory = data_dir
 gold_standard = str((output_directory / "Buy-ground-truth.json").absolute())
 output_file = str((output_directory / "Buy-result.json").absolute())
+
+
+class IsDataclass(Protocol):
+    # as already noted in comments, checking for this attribute is currently
+    # the most reliable way to ascertain that something is a dataclass
+    __dataclass_fields__: ClassVar[Dict]
 
 
 def _generate_abt_buy_ground_truth():
@@ -79,9 +84,9 @@ def _get_mini_dataset():
     return [str((data_dir / f"{idx:05}-sub-Buy.csv").absolute()) for idx in range(1, 3)]
 
 
-class ExperimentType(Enum):
-    Mini = 0
-    Full = 1
+class ExperimentType(StrEnum):
+    Mini = "mini"
+    Full = "full"
 
 
 experiment_config = {
@@ -92,16 +97,19 @@ experiment_config = {
 
 @click.command(name="run-experiment")
 @click.option(
-    "-t", "--experiment-type", type=click.Choice(ExperimentType), default=ExperimentType.Mini
+    "-t",
+    "--experiment-type",
+    type=click.Choice(ExperimentType),
+    default=ExperimentType.Mini,
 )
 def run_experiment(experiment_type: ExperimentType):
     logging.basicConfig(stream=sys.stdout, level=logging.INFO)
-    pool = ThreadPoolExecutor(32)
+    pool = ProcessPoolExecutor(20)
     gen_ground_truth, gen_dataset = experiment_config[experiment_type]
     ground_truth = gen_ground_truth()
     input_files = gen_dataset()
 
-    results: dict[float, dict[ModelType, Any]] = {
+    results: dict[float, IsDataclass] = {
         threshold: result
         for threshold, result in pool.map(
             partial(match_entities, input_file=input_files),
@@ -109,7 +117,6 @@ def run_experiment(experiment_type: ExperimentType):
         )
     }
 
-    metrics = {}
     for model_type in [ModelType.FSM, ModelType.ALG]:
         df = pd.DataFrame()
         futures = {
@@ -128,7 +135,6 @@ def run_experiment(experiment_type: ExperimentType):
                 "variable": f"{model_type} Evaluator",
             },
         )
-        tick_size = 20
         symbols = [
             s
             for s in SymbolValidator().values[2::3]
