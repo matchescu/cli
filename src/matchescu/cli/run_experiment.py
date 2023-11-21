@@ -4,10 +4,12 @@ import pickle
 import sys
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from dataclasses import asdict
+from enum import Enum
 from functools import partial
 from pathlib import Path
 from typing import Any
 
+import click
 import pandas as pd
 import plotly.express as px
 from plotly.validators.scatter.marker import SymbolValidator
@@ -77,11 +79,28 @@ def _get_mini_dataset():
     return [str((data_dir / f"{idx:05}-sub-Buy.csv").absolute()) for idx in range(1, 3)]
 
 
-if __name__ == "__main__":
+class ExperimentType(Enum):
+    Mini = 0
+    Full = 1
+
+
+experiment_config = {
+    ExperimentType.Mini: (_generate_miniature_ground_truth, _get_mini_dataset),
+    ExperimentType.Full: (_generate_abt_buy_ground_truth, _get_abt_buy),
+}
+
+
+@click.command(name="run-experiment")
+@click.option(
+    "-t", "--experiment-type", type=click.Choice(ExperimentType), default=ExperimentType.Mini
+)
+def run_experiment(experiment_type: ExperimentType):
     logging.basicConfig(stream=sys.stdout, level=logging.INFO)
-    pool = ThreadPoolExecutor(1)
-    ground_truth = _generate_miniature_ground_truth()
-    input_files = _get_mini_dataset()
+    pool = ThreadPoolExecutor(32)
+    gen_ground_truth, gen_dataset = experiment_config[experiment_type]
+    ground_truth = gen_ground_truth()
+    input_files = gen_dataset()
+
     results: dict[float, dict[ModelType, Any]] = {
         threshold: result
         for threshold, result in pool.map(
@@ -141,3 +160,7 @@ if __name__ == "__main__":
             showlegend=True,
         )
         fig.show()
+
+
+if __name__ == "__main__":
+    run_experiment()
