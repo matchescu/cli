@@ -5,12 +5,14 @@ from concurrent.futures import ProcessPoolExecutor
 from dataclasses import asdict
 from enum import StrEnum
 from functools import partial
+from numbers import Number
 from pathlib import Path
 from typing import Protocol, ClassVar, Dict
 
 import click
 import pandas as pd
 import plotly.express as px
+from numpy import isnan
 from plotly.validators.scatter.marker import SymbolValidator
 
 from matchescu.adt.entity_resolution_result import EntityResolutionResult
@@ -39,17 +41,26 @@ class IsDataclass(Protocol):
     __dataclass_fields__: ClassVar[Dict]
 
 
+def _cleanup(value):
+    if isinstance(value, Number):
+        if isnan(value):
+            return ""
+    if value is None:
+        return ""
+    return str(value)
+
+
 def _generate_abt_buy_ground_truth():
-    abt = pd.read_csv(abt_file, header=0, index_col="id", encoding_errors="ignore")
-    buy = pd.read_csv(buy_file, header=0, index_col="id", encoding_errors="ignore")
+    abt = pd.read_csv(abt_file, header=0, index_col="id", encoding_errors="ignore").applymap(_cleanup)
+    buy = pd.read_csv(buy_file, header=0, index_col="id", encoding_errors="ignore").applymap(_cleanup)
     mapping = pd.read_csv(ideal_mapping_file, header=0)
     pair_list = []
     input_set = {}
     for index, link in mapping.iterrows():
         id_abt = link["idAbt"]
         id_buy = link["idBuy"]
-        abt_ref = tuple(map(str, (*abt.loc[id_abt], id_abt)))
-        buy_ref = tuple(map(str, (*buy.loc[id_buy], id_buy)))
+        abt_ref = tuple(v for v in (*abt.loc[id_abt], str(id_abt)))
+        buy_ref = tuple(v for v in (*buy.loc[id_buy], str(id_buy)))
         pair = (abt_ref, buy_ref)
         pair_list.append(pair)
         input_set[abt_ref] = None
