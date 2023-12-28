@@ -65,7 +65,8 @@ def _experiment_metrics(output_dir: Path, model_type: ModelType) -> str:
     return str((output_dir / f"{model_type.value.lower()}-metrics.csv").absolute())
 
 
-def _load_result(output_dir: Path, threshold: float, log) -> dict:
+def _load_result(output_dir: Path, threshold: float) -> dict:
+    log = get_logger("load-result")
     results_path = _experiment_result_file_name(output_dir, threshold)
     log.info("loading results from %s", results_path)
     with open(results_path, "r") as f:
@@ -122,10 +123,11 @@ def run_experiment(
             df = pd.DataFrame()
             for x in range(0, 100, 1):
                 t = x / 100
+                result_future = pool.submit(_load_result, setup.output_directory, t)
                 future = pool.submit(
                     compute_metrics,
                     ground_truth,
-                    _load_result(setup.output_directory, t, log),
+                    result_future.result(),
                     model_type
                 )
                 row = future.result()

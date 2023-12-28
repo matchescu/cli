@@ -7,6 +7,7 @@ from typing import Iterable, Any
 import click
 
 from matchescu.instrumentation.timer import timer
+from matchescu.logs import get_logger
 from matchescu.metrics.algebraic import (
     twi,
     rand_index,
@@ -136,26 +137,16 @@ def compute_metrics(
     entity_resolution_results: dict[str, Any],
     model_type: ModelType,
 ) -> dict[str, float]:
+    log = get_logger("compute_metrics")
     if model_type not in gold_standard:
-        print(
-            "The",
-            model_type,
-            "model is not supported by the ground truth",
-            file=sys.stderr,
-        )
+        log.error("The %s model is not supported by the ground truth", model_type)
         sys.exit(1)
     if model_type not in entity_resolution_results:
-        print(
-            "The",
-            model_type,
-            "model is not supported by the entity resolution task",
-            file=sys.stderr,
-        )
+        log.error("The %s model is not supported by the ER task", model_type)
         sys.exit(1)
     if model_type not in METRICS:
-        print("The", model_type, "model is not supported by the app", file=sys.stderr)
+        log.error("The %s model is not supported by the app", model_type)
         sys.exit(1)
-
+    log.info("computing %s metrics", model_type)
     quality_eval = METRICS[model_type]
     return quality_eval(gold_standard, entity_resolution_results)
-
