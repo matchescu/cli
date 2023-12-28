@@ -1,11 +1,12 @@
+import datetime
 import json
-import logging
-import sys
+import os
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import asdict, is_dataclass
 from enum import StrEnum
 from functools import partial
 from pathlib import Path
+from time import time
 from typing import Any
 
 import click
@@ -17,6 +18,7 @@ from plotly.validators.scatter.marker import SymbolValidator
 from matchescu.cli._compute_quality_metrics import compute_metrics, ModelType
 from matchescu.cli._entity_resolution import match_entities
 from matchescu.cli._experiment_setups import MiniBuy, ExistingData
+from matchescu.logs import get_logger
 
 repo_parent_dir = Path(__file__).parent.parent.parent.parent.parent
 data_dir = repo_parent_dir / "data"
@@ -81,8 +83,11 @@ class DataclassJSONEncoder(json.JSONEncoder):
 def run_experiment(
     experiments: list[ExperimentType], show_graph: bool, perform_matching: bool
 ) -> None:
-    logging.basicConfig(stream=sys.stdout, level=logging.INFO)
-    pool = ProcessPoolExecutor(20)
+    log = get_logger()
+    process_count = os.cpu_count()-1
+    log.info("using %d parallel processes for entity resolution", process_count)
+
+    pool = ProcessPoolExecutor(process_count)
     setups = {
         experiment_config[experiment](prepare_matching=perform_matching): {}
         for experiment in experiments
@@ -91,7 +96,10 @@ def run_experiment(
         setups[setup] = setup.generate_ground_truth()
 
     if perform_matching:
+        start_time = time()
+        log.info("performing matching using %d parallel processes", process_count)
         for setup in setups:
+            log.info("performing matching using the %s experiment setup", type(setup).name)
             input_files = setup.list_dataset_files()
             results: dict[float, dict[str, Any]] = {
                 threshold: result
@@ -100,12 +108,19 @@ def run_experiment(
                     (x / 100 for x in range(0, 100, 1)),
                 )
             }
-            with open(_experiment_result_file_name(setup.output_directory), "w") as f:
+            results_path = _experiment_result_file_name(setup.output_directory)
+            log.info("saving results to %s", results_path)
+            with open(results_path, "w") as f:
                 json.dump(results, f, indent=4, cls=DataclassJSONEncoder)
+            log.info("results saved to %s", results_path)
+        log.info("completed matching in %s", datetime.timedelta(seconds=time()-start_time))
 
     for setup, ground_truth in setups.items():
-        with open(_experiment_result_file_name(setup.output_directory), "r") as f:
+        results_path = _experiment_result_file_name(setup.output_directory)
+        log.info("loading results from %s", results_path)
+        with open(results_path, "r") as f:
             results = json.load(f)
+        log.info("loaded results from %s", results_path)
         for model_type in [ModelType.FSM, ModelType.ALG]:
             df = pd.DataFrame()
             futures = {
@@ -116,10 +131,13 @@ def run_experiment(
                 row = future.result()
                 df = pd.concat([df, pd.DataFrame(row, index=[t])])
             df.to_csv(_experiment_metrics(setup.output_directory, model_type), sep=";")
+            log.info("saved %s metrics", model_type)
+        log.info("metrics computed")
 
     if not show_graph:
         return
 
+    log.info("showing graph")
     for setup in setups:
         for model_type in [ModelType.FSM, ModelType.ALG]:
             df = pd.read_csv(
