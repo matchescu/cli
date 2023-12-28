@@ -26,6 +26,8 @@ class ExperimentType(StrEnum):
     Mini = "mini"
     AbtBuy = "abt-buy"
     AmazonGoogleProducts = "amazon-google"
+    DBLP_ACM = "dblp-acm"
+    DBLP_Scholar = "dblp-scholar"
 
 
 experiment_config = {
@@ -47,6 +49,24 @@ experiment_config = {
         perfect_mapping_name="Amzon_GoogleProducts_perfectMapping.csv",
         ds1_pm_id_col="idAmazon",
         ds2_pm_id_col="idGoogleBase",
+    ),
+    ExperimentType.DBLP_ACM: partial(
+        ExistingData,
+        data_dir=data_dir / "DBLP-ACM",
+        ds1_name="DBLP2.csv",
+        ds2_name="ACM.csv",
+        perfect_mapping_name="DBLP-ACM_perfectMapping.csv",
+        ds1_pm_id_col="idDBLP",
+        ds2_pm_id_col="idACM",
+    ),
+    ExperimentType.DBLP_Scholar: partial(
+        ExistingData,
+        data_dir=data_dir / "DBLP-Scholar",
+        ds1_name="DBLP1.csv",
+        ds2_name="Scholar.csv",
+        perfect_mapping_name="DBLP-Scholar_perfectMapping.csv",
+        ds1_pm_id_col="idDBLP",
+        ds2_pm_id_col="idScholar",
     ),
 }
 
@@ -90,7 +110,7 @@ def run_experiment(
     experiments: list[ExperimentType], show_graph: bool, perform_matching: bool
 ) -> None:
     log = get_logger()
-    process_count = os.cpu_count()-1
+    process_count = os.cpu_count() - 1
     log.info("using %d parallel processes for entity resolution", process_count)
 
     pool = ProcessPoolExecutor(process_count)
@@ -111,12 +131,16 @@ def run_experiment(
                 partial(match_entities, input_file=input_files),
                 (x / 100 for x in range(0, 100, 1)),
             ):
-                results_path = _experiment_result_file_name(setup.output_directory, threshold)
+                results_path = _experiment_result_file_name(
+                    setup.output_directory, threshold
+                )
                 log.info("saving results to %s", results_path)
                 with open(results_path, "w") as f:
                     f.write(orjson.dumps(result).decode("utf-8"))
                 log.info("results saved to %s", results_path)
-        log.info("completed matching in %s", datetime.timedelta(seconds=time()-start_time))
+        log.info(
+            "completed matching in %s", datetime.timedelta(seconds=time() - start_time)
+        )
 
     for setup, ground_truth in setups.items():
         for model_type in [ModelType.FSM, ModelType.ALG]:
@@ -125,10 +149,7 @@ def run_experiment(
                 t = x / 100
                 result_future = pool.submit(_load_result, setup.output_directory, t)
                 future = pool.submit(
-                    compute_metrics,
-                    ground_truth,
-                    result_future.result(),
-                    model_type
+                    compute_metrics, ground_truth, result_future.result(), model_type
                 )
                 row = future.result()
                 df = pd.concat([df, pd.DataFrame(row, index=[t])])
