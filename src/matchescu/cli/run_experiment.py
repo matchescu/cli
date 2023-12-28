@@ -104,7 +104,7 @@ def _load_result(output_dir: Path, threshold: float) -> dict:
     default=[ExperimentType.Mini],
     multiple=True,
 )
-@click.option("-g", "--show-graph", type=click.BOOL, is_flag=True, default=True)
+@click.option("-g", "--show-graph", type=click.BOOL, default=True)
 @click.option("-m", "--perform-matching", type=click.BOOL, default=True)
 def run_experiment(
     experiments: list[ExperimentType], show_graph: bool, perform_matching: bool
