@@ -16,7 +16,7 @@ from plotly.validators.scatter.marker import SymbolValidator
 
 from matchescu.cli._compute_quality_metrics import compute_metrics, ModelType
 from matchescu.cli._entity_resolution import match_entities
-from matchescu.cli._experiment_setups import MiniBuy, AbtBuy
+from matchescu.cli._experiment_setups import MiniBuy, ExistingData
 
 repo_parent_dir = Path(__file__).parent.parent.parent.parent.parent
 data_dir = repo_parent_dir / "data"
@@ -25,11 +25,29 @@ data_dir = repo_parent_dir / "data"
 class ExperimentType(StrEnum):
     Mini = "mini"
     AbtBuy = "abt-buy"
+    AmazonGoogleProducts = "amazon-google"
 
 
 experiment_config = {
     ExperimentType.Mini: partial(MiniBuy, data_dir=data_dir),
-    ExperimentType.AbtBuy: partial(AbtBuy, data_dir=data_dir / "abt-buy"),
+    ExperimentType.AbtBuy: partial(
+        ExistingData,
+        data_dir=data_dir / "abt-buy",
+        ds1_name="Abt.csv",
+        ds2_name="Buy.csv",
+        perfect_mapping_name="abt_buy_perfectMapping.csv",
+        ds1_pm_id_col="idAbt",
+        ds2_pm_id_col="idBuy",
+    ),
+    ExperimentType.AmazonGoogleProducts: partial(
+        ExistingData,
+        data_dir=data_dir / "Amazon-GoogleProducts",
+        ds1_name="Amazon.csv",
+        ds2_name="GoogleProducts.csv",
+        perfect_mapping_name="Amzon_GoogleProducts_perfectMapping.csv",
+        ds1_pm_id_col="idAmazon",
+        ds2_pm_id_col="idGoogleBase",
+    ),
 }
 
 
@@ -60,7 +78,9 @@ class DataclassJSONEncoder(json.JSONEncoder):
 )
 @click.option("-g", "--show-graph", type=click.BOOL, is_flag=True, default=True)
 @click.option("-m", "--perform-matching", type=click.BOOL, default=True)
-def run_experiment(experiments: list[ExperimentType], show_graph: bool, perform_matching: bool) -> None:
+def run_experiment(
+    experiments: list[ExperimentType], show_graph: bool, perform_matching: bool
+) -> None:
     logging.basicConfig(stream=sys.stdout, level=logging.INFO)
     pool = ProcessPoolExecutor(20)
     setups = {

@@ -56,14 +56,25 @@ class MiniBuy:
         ]
 
 
-class AbtBuy:
-    def __init__(self, data_dir: Path, prepare_matching: bool = False):
-        self.__abt_file = data_dir / "Abt.csv"
-        self.__buy_file = data_dir / "Buy.csv"
-        self.__ideal_mapping_file = data_dir / "abt_buy_perfectMapping.csv"
+class ExistingData:
+    def __init__(
+        self,
+        data_dir: Path,
+        ds1_name: str,
+        ds2_name: str,
+        perfect_mapping_name: str,
+        ds1_pm_id_col: str,
+        ds2_pm_id_col: str,
+        prepare_matching: bool = False
+    ):
+        self.__ds1_file = data_dir / ds1_name
+        self.__ds2_file = data_dir / ds2_name
+        self.__ideal_mapping_file = data_dir / perfect_mapping_name
         self.__gt_file = data_dir / "gt.json"
         self.output_directory = data_dir
         self.__prepare_matching = prepare_matching
+        self._perf_mapping_id_col_1 = ds1_pm_id_col
+        self._perf_mapping_id_col_2 = ds2_pm_id_col
 
     @staticmethod
     def __clean_input_data(value: Any) -> str:
@@ -76,24 +87,24 @@ class AbtBuy:
 
     def generate_ground_truth(self) -> dict[str, Any]:
         if self.__prepare_matching:
-            abt = pd.read_csv(
-                self.__abt_file, header=0, index_col="id", encoding_errors="ignore"
+            ds1 = pd.read_csv(
+                self.__ds1_file, header=0, index_col="id", encoding_errors="ignore"
             ).applymap(self.__clean_input_data)
-            buy = pd.read_csv(
-                self.__buy_file, header=0, index_col="id", encoding_errors="ignore"
+            ds2 = pd.read_csv(
+                self.__ds2_file, header=0, index_col="id", encoding_errors="ignore"
             ).applymap(self.__clean_input_data)
             mapping = pd.read_csv(self.__ideal_mapping_file, header=0)
             pair_list = []
             input_set = {}
             for index, link in mapping.iterrows():
-                id_abt = link["idAbt"]
-                id_buy = link["idBuy"]
-                abt_ref = tuple(v for v in (*abt.loc[id_abt], str(id_abt)))
-                buy_ref = tuple(v for v in (*buy.loc[id_buy], str(id_buy)))
-                pair = (abt_ref, buy_ref)
+                ds1_id = link[self._perf_mapping_id_col_1]
+                ds2_id = link[self._perf_mapping_id_col_2]
+                ds1_ref = tuple(v for v in (*ds1.loc[ds1_id], str(ds1_id)))
+                ds2_ref = tuple(v for v in (*ds2.loc[ds2_id], str(ds2_id)))
+                pair = (ds1_ref, ds2_ref)
                 pair_list.append(pair)
-                input_set[abt_ref] = None
-                input_set[buy_ref] = None
+                input_set[ds1_ref] = None
+                input_set[ds2_ref] = None
 
             gt = EntityResolutionResult()
             gt.fsm = pair_list
@@ -106,4 +117,4 @@ class AbtBuy:
             return json.load(f)
 
     def list_dataset_files(self) -> list[str]:
-        return [str(x.absolute()) for x in [self.__abt_file, self.__buy_file]]
+        return [str(x.absolute()) for x in [self.__ds1_file, self.__ds2_file]]
