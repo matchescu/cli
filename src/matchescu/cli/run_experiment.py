@@ -28,8 +28,8 @@ class ExperimentType(StrEnum):
 
 
 experiment_config = {
-    ExperimentType.Mini: MiniBuy,
-    ExperimentType.AbtBuy: AbtBuy,
+    ExperimentType.Mini: partial(MiniBuy, data_dir=data_dir),
+    ExperimentType.AbtBuy: partial(AbtBuy, data_dir=data_dir / "abt-buy"),
 }
 
 
@@ -64,7 +64,7 @@ def run_experiment(experiments: list[ExperimentType], show_graph: bool, perform_
     logging.basicConfig(stream=sys.stdout, level=logging.INFO)
     pool = ProcessPoolExecutor(20)
     setups = {
-        experiment_config[experiment](data_dir, perform_matching): {}
+        experiment_config[experiment](prepare_matching=perform_matching): {}
         for experiment in experiments
     }
     for setup in setups:

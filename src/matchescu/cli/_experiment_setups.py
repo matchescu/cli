@@ -58,11 +58,11 @@ class MiniBuy:
 
 class AbtBuy:
     def __init__(self, data_dir: Path, prepare_matching: bool = False):
-        self.__abt_file = data_dir / "abt-buy" / "Abt.csv"
-        self.__buy_file = data_dir / "abt-buy" / "Buy.csv"
-        self.__ideal_mapping_file = data_dir / "abt-buy" / "abt_buy_perfectMapping.csv"
-        self.__gt_file = data_dir / "abt-buy" / "gt.json"
-        self.output_directory = data_dir / "abt-buy"
+        self.__abt_file = data_dir / "Abt.csv"
+        self.__buy_file = data_dir / "Buy.csv"
+        self.__ideal_mapping_file = data_dir / "abt_buy_perfectMapping.csv"
+        self.__gt_file = data_dir / "gt.json"
+        self.output_directory = data_dir
         self.__prepare_matching = prepare_matching
 
     @staticmethod
