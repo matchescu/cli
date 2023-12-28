@@ -15,6 +15,7 @@ matchescu-data-generators = {path = "../data-generators"}
 plotly = "^5.17.0"
 entity-matchers = {path = "../entity-matchers"}
 er-metrics = {path = "../er-metrics"}
+orjson = "^3.9.10"
 
 [tool.poetry.scripts]
 matchescu = "matchescu.cli.__main__:main"

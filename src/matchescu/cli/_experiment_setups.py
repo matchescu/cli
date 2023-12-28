@@ -1,5 +1,5 @@
-import json
-from dataclasses import asdict
+
+import orjson
 from numbers import Number
 from pathlib import Path
 from typing import Any, Protocol
@@ -47,7 +47,7 @@ class MiniBuy:
             )
 
         with open(self.gold_standard) as f:
-            return json.load(f)
+            return orjson.loads(f.read())
 
     def list_dataset_files(self) -> list[str]:
         return [
@@ -109,12 +109,14 @@ class ExistingData:
             gt = EntityResolutionResult()
             gt.fsm = pair_list
             gt.algebraic = compute_partition(list(input_set), pair_list)
-            obj = asdict(gt)
             with open(self.__gt_file, "w") as f:
-                json.dump(obj, f, indent=4)
+                f.write(orjson.dumps(gt).decode("utf-8"))
 
         with open(self.__gt_file, "r") as f:
-            return json.load(f)
+            return orjson.loads(f.read())
 
     def list_dataset_files(self) -> list[str]:
         return [str(x.absolute()) for x in [self.__ds1_file, self.__ds2_file]]
+
+    def __str__(self):
+        return f"{self.output_directory}[{self.__ds1_file.name} <-> {self.__ds2_file.name}]"

@@ -1,15 +1,13 @@
 import datetime
-import json
 import os
 from concurrent.futures import ProcessPoolExecutor
-from dataclasses import asdict, is_dataclass
 from enum import StrEnum
 from functools import partial
 from pathlib import Path
 from time import time
-from typing import Any
 
 import click
+import orjson
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
@@ -53,20 +51,27 @@ experiment_config = {
 }
 
 
-def _experiment_result_file_name(output_dir: Path) -> str:
-    return str((output_dir / "results.json").absolute())
+def _results_dir(output_dir: Path) -> Path:
+    results_dir = output_dir / "results"
+    results_dir.mkdir(parents=True, exist_ok=True)
+    return results_dir
+
+
+def _experiment_result_file_name(output_dir: Path, threshold: float) -> str:
+    return str((_results_dir(output_dir) / f"{threshold}.json").absolute())
 
 
 def _experiment_metrics(output_dir: Path, model_type: ModelType) -> str:
     return str((output_dir / f"{model_type.value.lower()}-metrics.csv").absolute())
 
 
-class DataclassJSONEncoder(json.JSONEncoder):
-    def default(self, obj):
-        if is_dataclass(obj):
-            return asdict(obj)
-        # Let the base class default method raise the TypeError
-        return json.JSONEncoder.default(self, obj)
+def _load_result(output_dir: Path, threshold: float, log) -> dict:
+    results_path = _experiment_result_file_name(output_dir, threshold)
+    log.info("loading results from %s", results_path)
+    with open(results_path, "r") as f:
+        results = orjson.loads(f.read())
+    log.info("loaded results from %s", results_path)
+    return results
 
 
 @click.command(name="run-experiment")
@@ -99,35 +104,30 @@ def run_experiment(
         start_time = time()
         log.info("performing matching using %d parallel processes", process_count)
         for setup in setups:
-            log.info("performing matching using the %s experiment setup", type(setup).name)
+            log.info("performing %s entity resolution", setup)
             input_files = setup.list_dataset_files()
-            results: dict[float, dict[str, Any]] = {
-                threshold: result
-                for threshold, result in pool.map(
-                    partial(match_entities, input_file=input_files),
-                    (x / 100 for x in range(0, 100, 1)),
-                )
-            }
-            results_path = _experiment_result_file_name(setup.output_directory)
-            log.info("saving results to %s", results_path)
-            with open(results_path, "w") as f:
-                json.dump(results, f, indent=4, cls=DataclassJSONEncoder)
-            log.info("results saved to %s", results_path)
+            for threshold, result in pool.map(
+                partial(match_entities, input_file=input_files),
+                (x / 100 for x in range(0, 100, 1)),
+            ):
+                results_path = _experiment_result_file_name(setup.output_directory, threshold)
+                log.info("saving results to %s", results_path)
+                with open(results_path, "w") as f:
+                    f.write(orjson.dumps(result).decode("utf-8"))
+                log.info("results saved to %s", results_path)
         log.info("completed matching in %s", datetime.timedelta(seconds=time()-start_time))
 
     for setup, ground_truth in setups.items():
-        results_path = _experiment_result_file_name(setup.output_directory)
-        log.info("loading results from %s", results_path)
-        with open(results_path, "r") as f:
-            results = json.load(f)
-        log.info("loaded results from %s", results_path)
         for model_type in [ModelType.FSM, ModelType.ALG]:
             df = pd.DataFrame()
-            futures = {
-                t: pool.submit(compute_metrics, ground_truth, result, model_type)
-                for t, result in results.items()
-            }
-            for t, future in futures.items():
+            for x in range(0, 100, 1):
+                t = x / 100
+                future = pool.submit(
+                    compute_metrics,
+                    ground_truth,
+                    _load_result(setup.output_directory, t, log),
+                    model_type
+                )
                 row = future.result()
                 df = pd.concat([df, pd.DataFrame(row, index=[t])])
             df.to_csv(_experiment_metrics(setup.output_directory, model_type), sep=";")
