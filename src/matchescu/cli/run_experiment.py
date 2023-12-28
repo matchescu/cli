@@ -2,181 +2,171 @@ import json
 import logging
 import sys
 from concurrent.futures import ProcessPoolExecutor
-from dataclasses import asdict
+from dataclasses import asdict, is_dataclass
 from enum import StrEnum
 from functools import partial
-from numbers import Number
 from pathlib import Path
-from typing import Protocol, ClassVar, Dict
+from typing import Any
 
 import click
 import pandas as pd
 import plotly.express as px
-from numpy import isnan
+import plotly.graph_objects as go
 from plotly.validators.scatter.marker import SymbolValidator
 
-from matchescu.adt.entity_resolution_result import EntityResolutionResult
 from matchescu.cli._compute_quality_metrics import compute_metrics, ModelType
 from matchescu.cli._entity_resolution import match_entities
-from matchescu.cli._generate import generate
-from matchescu.common.partitioning import compute_partition
+from matchescu.cli._experiment_setups import MiniBuy, AbtBuy
 
 repo_parent_dir = Path(__file__).parent.parent.parent.parent.parent
 data_dir = repo_parent_dir / "data"
-abt_file = data_dir / "abt-buy" / "Abt.csv"
-buy_file = data_dir / "abt-buy" / "Buy.csv"
-ideal_mapping_file = data_dir / "abt-buy" / "abt_buy_perfectMapping.csv"
-gt_file = data_dir / "abt-buy" / "gt.json"
-er_file = data_dir / "abt-buy" / "er.json"
-
-generator_input_file = data_dir / "Buy.csv"
-output_directory = data_dir
-gold_standard = str((output_directory / "Buy-ground-truth.json").absolute())
-output_file = str((output_directory / "Buy-result.json").absolute())
-
-
-class IsDataclass(Protocol):
-    # as already noted in comments, checking for this attribute is currently
-    # the most reliable way to ascertain that something is a dataclass
-    __dataclass_fields__: ClassVar[Dict]
-
-
-def _cleanup(value):
-    if isinstance(value, Number):
-        if isnan(value):
-            return ""
-    if value is None:
-        return ""
-    return str(value)
-
-
-def _generate_abt_buy_ground_truth():
-    abt = pd.read_csv(abt_file, header=0, index_col="id", encoding_errors="ignore").applymap(_cleanup)
-    buy = pd.read_csv(buy_file, header=0, index_col="id", encoding_errors="ignore").applymap(_cleanup)
-    mapping = pd.read_csv(ideal_mapping_file, header=0)
-    pair_list = []
-    input_set = {}
-    for index, link in mapping.iterrows():
-        id_abt = link["idAbt"]
-        id_buy = link["idBuy"]
-        abt_ref = tuple(v for v in (*abt.loc[id_abt], str(id_abt)))
-        buy_ref = tuple(v for v in (*buy.loc[id_buy], str(id_buy)))
-        pair = (abt_ref, buy_ref)
-        pair_list.append(pair)
-        input_set[abt_ref] = None
-        input_set[buy_ref] = None
-
-    gt = EntityResolutionResult()
-    gt.fsm = pair_list
-    gt.algebraic = compute_partition(list(input_set), pair_list)
-    return {"fsm": gt.fsm, "algebraic": gt.algebraic}
-
-
-def _get_abt_buy():
-    return [str(x.absolute()) for x in [abt_file, buy_file]]
-
-
-def _generate_miniature_ground_truth():
-    generate(
-        str(generator_input_file.absolute()),
-        str(output_directory.absolute()),
-        gold_standard,
-        [
-            "name,manufacturer,price,id",
-            "description,name,id",
-        ],
-    )
-
-    with open(gold_standard) as f:
-        return json.load(f)
-
-
-def _get_mini_dataset():
-    return [str((data_dir / f"{idx:05}-sub-Buy.csv").absolute()) for idx in range(1, 3)]
 
 
 class ExperimentType(StrEnum):
     Mini = "mini"
-    Full = "full"
+    AbtBuy = "abt-buy"
 
 
 experiment_config = {
-    ExperimentType.Mini: (_generate_miniature_ground_truth, _get_mini_dataset),
-    ExperimentType.Full: (_generate_abt_buy_ground_truth, _get_abt_buy),
+    ExperimentType.Mini: MiniBuy,
+    ExperimentType.AbtBuy: AbtBuy,
 }
+
+
+def _experiment_result_file_name(output_dir: Path) -> str:
+    return str((output_dir / "results.json").absolute())
+
+
+def _experiment_metrics(output_dir: Path, model_type: ModelType) -> str:
+    return str((output_dir / f"{model_type.value.lower()}-metrics.csv").absolute())
+
+
+class DataclassJSONEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if is_dataclass(obj):
+            return asdict(obj)
+        # Let the base class default method raise the TypeError
+        return json.JSONEncoder.default(self, obj)
 
 
 @click.command(name="run-experiment")
 @click.option(
-    "-t",
-    "--experiment-type",
+    "-e",
+    "--experiment",
+    "experiments",
     type=click.Choice(ExperimentType),
-    default=ExperimentType.Mini,
+    default=[ExperimentType.Mini],
+    multiple=True,
 )
-def run_experiment(experiment_type: ExperimentType):
+@click.option("-g", "--show-graph", type=click.BOOL, is_flag=True, default=True)
+@click.option("-m", "--perform-matching", type=click.BOOL, default=True)
+def run_experiment(experiments: list[ExperimentType], show_graph: bool, perform_matching: bool) -> None:
     logging.basicConfig(stream=sys.stdout, level=logging.INFO)
     pool = ProcessPoolExecutor(20)
-    gen_ground_truth, gen_dataset = experiment_config[experiment_type]
-    ground_truth = gen_ground_truth()
-    input_files = gen_dataset()
-
-    results: dict[float, IsDataclass] = {
-        threshold: result
-        for threshold, result in pool.map(
-            partial(match_entities, input_file=input_files),
-            (x / 100 for x in range(0, 100, 1)),
-        )
+    setups = {
+        experiment_config[experiment](data_dir, perform_matching): {}
+        for experiment in experiments
     }
+    for setup in setups:
+        setups[setup] = setup.generate_ground_truth()
 
-    for model_type in [ModelType.FSM, ModelType.ALG]:
-        df = pd.DataFrame()
-        futures = {
-            t: pool.submit(compute_metrics, ground_truth, asdict(result), model_type)
-            for t, result in results.items()
-        }
-        for t, future in futures.items():
-            row = future.result()
-            df = pd.concat([df, pd.DataFrame(row, index=[t])])
+    if perform_matching:
+        for setup in setups:
+            input_files = setup.list_dataset_files()
+            results: dict[float, dict[str, Any]] = {
+                threshold: result
+                for threshold, result in pool.map(
+                    partial(match_entities, input_file=input_files),
+                    (x / 100 for x in range(0, 100, 1)),
+                )
+            }
+            with open(_experiment_result_file_name(setup.output_directory), "w") as f:
+                json.dump(results, f, indent=4, cls=DataclassJSONEncoder)
 
-        fig = px.scatter(
-            df[::3],
-            labels={
-                "index": "Jaccard Threshold (t)",
-                "value": "Measurement",
-                "variable": f"{model_type} Evaluator",
-            },
-        )
-        symbols = [
-            s
-            for s in SymbolValidator().values[2::3]
-            if len(s) < 3 or not (s[-3:] == "dot" or s[-3:] == "pen")
-        ]
-        for trace, symbol in zip(fig.data, symbols):
-            trace.update(mode="lines+markers", marker_symbol=symbol, marker_size=8)
-        fig.update_layout(
-            width=800,
-            height=600,
-            plot_bgcolor="white",
-            paper_bgcolor="white",
-            xaxis=dict(
-                title="Jaccard Threshold (t)",
-                showline=True,
-                linecolor="black",
-                mirror=True,
-                ticks="outside",
-                tickfont=dict(size=12, color="black"),
-            ),
-            yaxis=dict(
-                title="Value",
-                showline=True,
-                linecolor="black",
-                mirror=True,
-                ticks="outside",
-                tickfont=dict(size=12, color="black"),
-            ),
-            showlegend=True,
-        )
-        fig.show()
+    for setup, ground_truth in setups.items():
+        with open(_experiment_result_file_name(setup.output_directory), "r") as f:
+            results = json.load(f)
+        for model_type in [ModelType.FSM, ModelType.ALG]:
+            df = pd.DataFrame()
+            futures = {
+                t: pool.submit(compute_metrics, ground_truth, result, model_type)
+                for t, result in results.items()
+            }
+            for t, future in futures.items():
+                row = future.result()
+                df = pd.concat([df, pd.DataFrame(row, index=[t])])
+            df.to_csv(_experiment_metrics(setup.output_directory, model_type), sep=";")
+
+    if not show_graph:
+        return
+
+    for setup in setups:
+        for model_type in [ModelType.FSM, ModelType.ALG]:
+            df = pd.read_csv(
+                _experiment_metrics(setup.output_directory, model_type),
+                sep=";",
+                header=0,
+                index_col=0,
+            )
+            fig = px.line(
+                df,
+                labels={
+                    "index": "Jaccard Threshold (t)",
+                    "value": "Measurement",
+                    "variable": f"{model_type} Model",
+                },
+            )
+            symbols = [
+                s
+                for s in SymbolValidator().values[2::3]
+                if len(s) < 3 or not (s[-3:] == "dot" or s[-3:] == "pen")
+            ]
+            for trace, symbol in zip(fig.data, symbols):
+                trace.update(mode="lines+markers", marker_symbol=symbol, marker_size=8)
+            fig.update_layout(
+                width=800,
+                height=600,
+                plot_bgcolor="white",
+                paper_bgcolor="white",
+                xaxis=dict(
+                    title="Jaccard Threshold (t)",
+                    showline=True,
+                    linecolor="black",
+                    mirror=True,
+                    ticks="outside",
+                    tickfont=dict(size=12, color="black"),
+                ),
+                yaxis=dict(
+                    title="Value",
+                    showline=True,
+                    linecolor="black",
+                    mirror=True,
+                    ticks="outside",
+                    tickfont=dict(size=12, color="black"),
+                ),
+                showlegend=False,
+                updatemenus=[
+                    go.layout.Updatemenu(
+                        type="buttons",
+                        showactive=False,
+                        buttons=list(
+                            [
+                                dict(
+                                    label="Show Legend",
+                                    method="relayout",
+                                    args=["showlegend", True],
+                                ),
+                                dict(
+                                    label="Hide Legend",
+                                    method="relayout",
+                                    args=["showlegend", False],
+                                ),
+                            ]
+                        ),
+                    )
+                ],
+            )
+            fig.show()
 
 
 if __name__ == "__main__":

@@ -1,3 +1,4 @@
+import cProfile
 import json
 import sys
 from enum import Enum
@@ -36,7 +37,7 @@ class ModelType(str, Enum):
     __DESC = {
         "fsm": "Fellegi-Sunter",
         "serf": "Stanford Entity Resolution Framework",
-        "algebraic": "Algebraic Model",
+        "algebraic": "Algebraic",
     }
     FSM = "fsm"
     SERF = "serf"
@@ -157,3 +158,4 @@ def compute_metrics(
 
     quality_eval = METRICS[model_type]
     return quality_eval(gold_standard, entity_resolution_results)
+
