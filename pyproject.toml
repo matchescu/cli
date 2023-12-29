@@ -20,6 +20,9 @@ orjson = "^3.9.10"
 [tool.poetry.scripts]
 matchescu = "matchescu.cli.__main__:main"
 
+[tool.poetry.group.dev.dependencies]
+memray = "^1.11.0"
+
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
