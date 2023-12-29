@@ -131,13 +131,13 @@ def main(gold_standard: str, entity_resolution_results: str, model_type: ModelTy
         print(f"{metric_name}:", value)
 
 
-@timer("compute-metrics")
 def compute_metrics(
     gold_standard: dict[str, Any],
     entity_resolution_results: dict[str, Any],
     model_type: ModelType,
+    log=None
 ) -> dict[str, float]:
-    log = get_logger("compute_metrics")
+    log = log or get_logger("compute_metrics")
     if model_type not in gold_standard:
         log.error("The %s model is not supported by the ground truth", model_type)
         sys.exit(1)
@@ -147,6 +147,5 @@ def compute_metrics(
     if model_type not in METRICS:
         log.error("The %s model is not supported by the app", model_type)
         sys.exit(1)
-    log.info("computing %s metrics", model_type)
     quality_eval = METRICS[model_type]
     return quality_eval(gold_standard, entity_resolution_results)

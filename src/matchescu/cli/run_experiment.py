@@ -16,6 +16,7 @@ from plotly.validators.scatter.marker import SymbolValidator
 from matchescu.cli._compute_quality_metrics import compute_metrics, ModelType
 from matchescu.cli._entity_resolution import match_entities
 from matchescu.cli._experiment_setups import MiniBuy, ExistingData
+from matchescu.instrumentation.timer import timer
 from matchescu.logs import get_logger
 
 repo_parent_dir = Path(__file__).parent.parent.parent.parent.parent
@@ -95,6 +96,16 @@ def _load_result(output_dir: Path, threshold: float) -> dict:
     return results
 
 
+@timer("compute-metrics")
+def _compute_metrics_helper(
+    threshold: float, model_type: ModelType, ground_truth: dict, results_dir: Path
+) -> tuple[float, dict[str, float]]:
+    log = get_logger("compute-metrics")
+    log.info("computing %s metrics @t=%.2f", model_type, threshold)
+    result = _load_result(results_dir, threshold)
+    return threshold, compute_metrics(ground_truth, result, model_type, log)
+
+
 @click.command(name="run-experiment")
 @click.option(
     "-e",
@@ -110,7 +121,7 @@ def run_experiment(
     experiments: list[ExperimentType], show_graph: bool, perform_matching: bool
 ) -> None:
     log = get_logger()
-    process_count = os.cpu_count() - 1
+    process_count = os.cpu_count() // 2
     log.info("using %d parallel processes for entity resolution", process_count)
 
     pool = ProcessPoolExecutor(process_count)
@@ -145,13 +156,16 @@ def run_experiment(
     for setup, ground_truth in setups.items():
         for model_type in [ModelType.FSM, ModelType.ALG]:
             df = pd.DataFrame()
-            for x in range(0, 100, 1):
-                t = x / 100
-                result_future = pool.submit(_load_result, setup.output_directory, t)
-                future = pool.submit(
-                    compute_metrics, ground_truth, result_future.result(), model_type
-                )
-                row = future.result()
+            compute_metrics_partial = partial(
+                _compute_metrics_helper,
+                model_type=model_type,
+                ground_truth=ground_truth,
+                results_dir=setup.output_directory,
+            )
+
+            for t, row in pool.map(
+                compute_metrics_partial, (x / 100 for x in range(0, 100, 1))
+            ):
                 df = pd.concat([df, pd.DataFrame(row, index=[t])])
             df.to_csv(_experiment_metrics(setup.output_directory, model_type), sep=";")
             log.info("saved %s metrics", model_type)
