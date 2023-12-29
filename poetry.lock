@@ -48,7 +48,6 @@ develop = false
 [package.dependencies]
 certifi = "^2023.7.22"
 matchescu-base = {path = "../abstractions"}
-numpy = "^1.26.2"
 pandas = "^2.0.3"
 ppjoin = {git = "https://github.com/usc-isi-i2/ppjoin.git", rev = "0.2.0"}
 
