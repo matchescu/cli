@@ -1,4 +1,5 @@
 import datetime
+import itertools
 import os
 from concurrent.futures import ProcessPoolExecutor
 from enum import StrEnum
@@ -86,24 +87,31 @@ def _experiment_metrics(output_dir: Path, model_type: ModelType) -> str:
     return str((output_dir / f"{model_type.value.lower()}-metrics.csv").absolute())
 
 
-def _load_result(output_dir: Path, threshold: float) -> dict:
-    log = get_logger("load-result")
-    results_path = _experiment_result_file_name(output_dir, threshold)
-    log.info("loading results from %s", results_path)
-    with open(results_path, "r") as f:
-        results = orjson.loads(f.read())
-    log.info("loaded results from %s", results_path)
-    return results
+class compute_threshold_metrics:
+    def __init__(self, model_types: list[ModelType], results_dir: Path):
+        self.__model_types = model_types
+        self.__results_dir = results_dir
 
+    @staticmethod
+    @timer("load-er-result")
+    def _load_result(output_dir: Path, threshold: float) -> dict:
+        results_path = _experiment_result_file_name(output_dir, threshold)
+        with open(results_path, "r") as f:
+            results = orjson.loads(f.read())
+        return results
 
-@timer("compute-metrics")
-def _compute_metrics_helper(
-    threshold: float, model_type: ModelType, ground_truth: dict, results_dir: Path
-) -> tuple[float, dict[str, float]]:
-    log = get_logger("compute-metrics")
-    log.info("computing %s metrics @t=%.2f", model_type, threshold)
-    result = _load_result(results_dir, threshold)
-    return threshold, compute_metrics(ground_truth, result, model_type, log)
+    @timer("compute-threshold-metrics")
+    def __call__(self, call_args: tuple[float, dict]) -> tuple[float, dict[ModelType, dict[str, float]]]:
+        threshold, ground_truth = call_args
+        log = get_logger("compute-metrics")
+        er_result = self._load_result(self.__results_dir, threshold)
+        threshold_metrics = {}
+        for model_type in self.__model_types:
+            log.info("computing [%s]@t=%.2f", model_type, threshold)
+            threshold_metrics[model_type] = compute_metrics(
+                ground_truth, er_result, model_type, log
+            )
+        return threshold, threshold_metrics
 
 
 @click.command(name="run-experiment")
@@ -121,7 +129,9 @@ def run_experiment(
     experiments: list[ExperimentType], show_graph: bool, perform_matching: bool
 ) -> None:
     log = get_logger()
-    process_count = os.cpu_count() // 2
+    process_count = os.cpu_count() // 4
+    model_types = [ModelType.FSM, ModelType.ALG]
+
     log.info("using %d parallel processes for entity resolution", process_count)
 
     pool = ProcessPoolExecutor(process_count)
@@ -154,37 +164,42 @@ def run_experiment(
         )
 
     for setup, ground_truth in setups.items():
-        for model_type in [ModelType.FSM, ModelType.ALG]:
-            df = pd.DataFrame()
-            compute_metrics_partial = partial(
-                _compute_metrics_helper,
-                model_type=model_type,
-                ground_truth=ground_truth,
-                results_dir=setup.output_directory,
+        metrics: dict[ModelType, pd.DataFrame] = {
+            mtype: pd.DataFrame() for mtype in model_types
+        }
+        computer = compute_threshold_metrics(model_types, setup.output_directory)
+        metric_args = zip(
+            (x / 100 for x in range(0, 100, 1)),
+            itertools.repeat(ground_truth, 100),
+        )
+        for t, threshold_metrics in pool.map(computer, metric_args):
+            for model_type in threshold_metrics:
+                model_type_df = metrics[model_type]
+                threshold_df = threshold_metrics[model_type]
+                model_type_df = pd.concat(
+                    [model_type_df, pd.DataFrame(threshold_df, index=[t])]
+                )
+                metrics[model_type] = model_type_df
+        for model_type in metrics:
+            metrics[model_type].to_csv(
+                _experiment_metrics(setup.output_directory, model_type), sep=";"
             )
-
-            for t, row in pool.map(
-                compute_metrics_partial, (x / 100 for x in range(0, 100, 1))
-            ):
-                df = pd.concat([df, pd.DataFrame(row, index=[t])])
-            df.to_csv(_experiment_metrics(setup.output_directory, model_type), sep=";")
             log.info("saved %s metrics", model_type)
-        log.info("metrics computed")
 
     if not show_graph:
         return
 
     log.info("showing graph")
     for setup in setups:
-        for model_type in [ModelType.FSM, ModelType.ALG]:
-            df = pd.read_csv(
+        for model_type in model_types:
+            model_type_df = pd.read_csv(
                 _experiment_metrics(setup.output_directory, model_type),
                 sep=";",
                 header=0,
                 index_col=0,
             )
             fig = px.line(
-                df,
+                model_type_df,
                 labels={
                     "index": "Jaccard Threshold (t)",
                     "value": "Measurement",
