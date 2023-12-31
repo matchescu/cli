@@ -7,7 +7,6 @@ from matchescu.logs import get_logger
 
 def timer(text: str):
     def timer_decorator(f):
-
         @functools.wraps(f)
         def __wrap(*args, **kwargs):
             log = get_logger(text)

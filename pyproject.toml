@@ -16,6 +16,7 @@ plotly = "^5.17.0"
 entity-matchers = {path = "../entity-matchers"}
 er-metrics = {path = "../er-metrics"}
 orjson = "^3.9.10"
+kaleido = "0.2.1"
 
 [tool.poetry.scripts]
 matchescu = "matchescu.cli.__main__:main"

@@ -1,4 +1,3 @@
-
 import orjson
 from numbers import Number
 from pathlib import Path
@@ -55,6 +54,9 @@ class MiniBuy:
             for idx in range(1, 3)
         ]
 
+    def __str__(self):
+        return "mini-buy"
+
 
 class ExistingData:
     def __init__(
@@ -65,7 +67,7 @@ class ExistingData:
         perfect_mapping_name: str,
         ds1_pm_id_col: str,
         ds2_pm_id_col: str,
-        prepare_matching: bool = False
+        prepare_matching: bool = False,
     ):
         self.__ds1_file = data_dir / ds1_name
         self.__ds2_file = data_dir / ds2_name
@@ -119,4 +121,4 @@ class ExistingData:
         return [str(x.absolute()) for x in [self.__ds1_file, self.__ds2_file]]
 
     def __str__(self):
-        return f"{self.output_directory}[{self.__ds1_file.name} <-> {self.__ds2_file.name}]"
+        return f"{self.__ds1_file.stem.lower()}-{self.__ds2_file.stem.lower()}"

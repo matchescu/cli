@@ -135,7 +135,7 @@ def compute_metrics(
     gold_standard: dict[str, Any],
     entity_resolution_results: dict[str, Any],
     model_type: ModelType,
-    log=None
+    log=None,
 ) -> dict[str, float]:
     log = log or get_logger("compute_metrics")
     if model_type not in gold_standard:

@@ -11,7 +11,6 @@ import click
 import orjson
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
 from plotly.validators.scatter.marker import SymbolValidator
 
 from matchescu.cli._compute_quality_metrics import compute_metrics, ModelType
@@ -101,7 +100,9 @@ class compute_threshold_metrics:
         return results
 
     @timer("compute-threshold-metrics")
-    def __call__(self, call_args: tuple[float, dict]) -> tuple[float, dict[ModelType, dict[str, float]]]:
+    def __call__(
+        self, call_args: tuple[float, dict]
+    ) -> tuple[float, dict[ModelType, dict[str, float]]]:
         threshold, ground_truth = call_args
         log = get_logger("compute-metrics")
         er_result = self._load_result(self.__results_dir, threshold)
@@ -125,8 +126,19 @@ class compute_threshold_metrics:
 )
 @click.option("-g", "--show-graph", type=click.BOOL, default=True)
 @click.option("-m", "--perform-matching", type=click.BOOL, default=True)
+@click.option(
+    "-d",
+    "--image-dir",
+    type=click.Path(exists=True, file_okay=False, dir_okay=True, writable=True),
+    required=True,
+)
+@click.option("-c", "--calculate-metrics", type=click.BOOL, default=True)
 def run_experiment(
-    experiments: list[ExperimentType], show_graph: bool, perform_matching: bool
+    experiments: list[ExperimentType],
+    show_graph: bool,
+    perform_matching: bool,
+    image_dir: str,
+    calculate_metrics: bool,
 ) -> None:
     log = get_logger()
     process_count = os.cpu_count() // 4
@@ -163,33 +175,35 @@ def run_experiment(
             "completed matching in %s", datetime.timedelta(seconds=time() - start_time)
         )
 
-    for setup, ground_truth in setups.items():
-        metrics: dict[ModelType, pd.DataFrame] = {
-            mtype: pd.DataFrame() for mtype in model_types
-        }
-        computer = compute_threshold_metrics(model_types, setup.output_directory)
-        metric_args = zip(
-            (x / 100 for x in range(0, 100, 1)),
-            itertools.repeat(ground_truth, 100),
-        )
-        for t, threshold_metrics in pool.map(computer, metric_args):
-            for model_type in threshold_metrics:
-                model_type_df = metrics[model_type]
-                threshold_df = threshold_metrics[model_type]
-                model_type_df = pd.concat(
-                    [model_type_df, pd.DataFrame(threshold_df, index=[t])]
-                )
-                metrics[model_type] = model_type_df
-        for model_type in metrics:
-            metrics[model_type].to_csv(
-                _experiment_metrics(setup.output_directory, model_type), sep=";"
+    if calculate_metrics:
+        for setup, ground_truth in setups.items():
+            metrics: dict[ModelType, pd.DataFrame] = {
+                mtype: pd.DataFrame() for mtype in model_types
+            }
+            computer = compute_threshold_metrics(model_types, setup.output_directory)
+            metric_args = zip(
+                (x / 100 for x in range(0, 100, 1)),
+                itertools.repeat(ground_truth, 100),
             )
-            log.info("saved %s metrics", model_type)
+            for t, threshold_metrics in pool.map(computer, metric_args):
+                for model_type in threshold_metrics:
+                    model_type_df = metrics[model_type]
+                    threshold_df = threshold_metrics[model_type]
+                    model_type_df = pd.concat(
+                        [model_type_df, pd.DataFrame(threshold_df, index=[t])]
+                    )
+                    metrics[model_type] = model_type_df
+            for model_type in metrics:
+                metrics[model_type].to_csv(
+                    _experiment_metrics(setup.output_directory, model_type), sep=";"
+                )
+                log.info("saved %s metrics", model_type)
 
     if not show_graph:
         return
 
     log.info("showing graph")
+    graph_groups = {ModelType.FSM: [""], ModelType.ALG: ["pairwise", "cluster", ""]}
     for setup in setups:
         for model_type in model_types:
             model_type_df = pd.read_csv(
@@ -198,65 +212,64 @@ def run_experiment(
                 header=0,
                 index_col=0,
             )
-            fig = px.line(
-                model_type_df,
-                labels={
-                    "index": "Jaccard Threshold (t)",
-                    "value": "Measurement",
-                    "variable": f"{model_type} Model",
-                },
-            )
-            symbols = [
-                s
-                for s in SymbolValidator().values[2::3]
-                if len(s) < 3 or not (s[-3:] == "dot" or s[-3:] == "pen")
-            ]
-            for trace, symbol in zip(fig.data, symbols):
-                trace.update(mode="lines+markers", marker_symbol=symbol, marker_size=8)
-            fig.update_layout(
-                width=800,
-                height=600,
-                plot_bgcolor="white",
-                paper_bgcolor="white",
-                xaxis=dict(
-                    title="Jaccard Threshold (t)",
-                    showline=True,
-                    linecolor="black",
-                    mirror=True,
-                    ticks="outside",
-                    tickfont=dict(size=12, color="black"),
-                ),
-                yaxis=dict(
-                    title="Value",
-                    showline=True,
-                    linecolor="black",
-                    mirror=True,
-                    ticks="outside",
-                    tickfont=dict(size=12, color="black"),
-                ),
-                showlegend=False,
-                updatemenus=[
-                    go.layout.Updatemenu(
-                        type="buttons",
-                        showactive=False,
-                        buttons=list(
-                            [
-                                dict(
-                                    label="Show Legend",
-                                    method="relayout",
-                                    args=["showlegend", True],
-                                ),
-                                dict(
-                                    label="Hide Legend",
-                                    method="relayout",
-                                    args=["showlegend", False],
-                                ),
-                            ]
-                        ),
+            visited = set()
+            for group in graph_groups[model_type]:
+                graph_df = model_type_df[
+                    [
+                        col
+                        for col in model_type_df
+                        if col.startswith(group)
+                        and not any(col.startswith(v) for v in visited)
+                    ]
+                ]
+                visited.add(group)
+                fig = px.line(
+                    graph_df,
+                    labels={
+                        "index": "Jaccard Threshold (t)",
+                        "value": "Measurement",
+                        "variable": " ",
+                    },
+                )
+                symbols = [
+                    s
+                    for s in SymbolValidator().values[2::3]
+                    if len(s) < 3 or not (s[-3:] == "dot" or s[-3:] == "pen")
+                ]
+                for trace, symbol in zip(fig.data, symbols):
+                    trace.update(
+                        mode="lines+markers", marker_symbol=symbol, marker_size=8
                     )
-                ],
-            )
-            fig.show()
+                fig.update_layout(
+                    width=800,
+                    height=600,
+                    plot_bgcolor="white",
+                    paper_bgcolor="white",
+                    xaxis=dict(
+                        title="Jaccard Threshold (t)",
+                        showline=True,
+                        linecolor="black",
+                        mirror=True,
+                        ticks="outside",
+                        tickfont=dict(size=12, color="black"),
+                    ),
+                    yaxis=dict(
+                        title="Value",
+                        showline=True,
+                        linecolor="black",
+                        mirror=True,
+                        ticks="outside",
+                        tickfont=dict(size=12, color="black"),
+                    ),
+                    showlegend=True,
+                    legend=dict(
+                        orientation="h", yanchor="top", y=-0.125, xanchor="center", x=0.49
+                    ),
+                )
+                file_name = f"{setup}-{model_type.value.lower()}-{group or 'main'}.png"
+                file_path = os.path.join(image_dir, file_name)
+                fig.write_image(file_path)
+                fig.show()
 
 
 if __name__ == "__main__":
