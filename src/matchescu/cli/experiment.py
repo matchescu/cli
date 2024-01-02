@@ -141,7 +141,7 @@ def run_experiment(
     calculate_metrics: bool,
 ) -> None:
     log = get_logger()
-    process_count = os.cpu_count() // 4
+    process_count = os.cpu_count() // 2
     model_types = [ModelType.FSM, ModelType.ALG]
 
     log.info("using %d parallel processes for entity resolution", process_count)
