@@ -9,29 +9,25 @@ import plotly.graph_objects as go
 from rich.progress import Progress
 
 
-from .config import EvaluationConfig, new_benchmark_data_factory, JSONConfig
-from ._cmd_group import matchescu
-from .data._comparison_space import load_comparison_space
-from .models import new_matcher
+from matchescu.cli.config import (
+    EvaluationConfig,
+    new_benchmark_data_factory,
+    JSONConfig,
+)
+from matchescu.cli.data import load_comparison_space
+from matchescu.cli.models import new_matcher
+from matchescu.cli._cli_runtime import get_options
+from ._cmd_group import evaluate
 
 os.environ["DISABLE_TQDM"] = "true"
+
 
 logging.getLogger("accelerate").setLevel(logging.ERROR)
 logging.getLogger("transformers.modeling_utils").setLevel(logging.ERROR)
 logging.getLogger("transformers.modeling_parallel_utils").setLevel(logging.ERROR)
 
 
-@matchescu.command()
-@click.option(
-    "-d",
-    "--root-dir",
-    default=Path.cwd(),
-    required=True,
-    type=click.Path(
-        exists=True, file_okay=False, dir_okay=True, readable=True, resolve_path=True
-    ),
-    help="Everything in the config files is relative to this directory. Required.",
-)
+@evaluate.command("asymmetry")
 @click.option(
     "-f",
     "--config-file",
@@ -41,8 +37,9 @@ logging.getLogger("transformers.modeling_parallel_utils").setLevel(logging.ERROR
     ),
     help="configuration file for the evaluation pipeline",
 )
-def evaluate_asymmetry(root_dir: Path, config_file: str | PathLike):
-    root_dir = Path(root_dir).absolute()
+@click.pass_context
+def main(ctx: click.Context, config_file: str | PathLike):
+    root_dir = get_options(ctx).root_dir
     config_file = Path(config_file).absolute()
     cfg = JSONConfig(config_file, EvaluationConfig).load()
 
