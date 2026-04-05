@@ -3,10 +3,10 @@ from os import PathLike
 from pathlib import Path
 from typing import TypeVar, Generic, Optional
 
-from pydantic import TypeAdapter, BaseModel
-
+from pydantic import BaseModel
 
 TConfig = TypeVar("TConfig", bound=BaseModel)
+
 
 class JSONConfig(Generic[TConfig]):
     def __init__(self, path: str | PathLike, config_type: type[TConfig]):

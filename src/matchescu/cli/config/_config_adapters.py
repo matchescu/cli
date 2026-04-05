@@ -1,5 +1,12 @@
-from matchescu.matching.config import AnyDatasetConfig, MagellanBenchmarkDataConfig, CsvBenchmarkDataConfig
-from matchescu.matching.evaluation.data.benchmark import MagellanBenchmarkDataFactory, CsvBenchmarkDataFactory
+from matchescu.matching.config import (
+    AnyDatasetConfig,
+    MagellanBenchmarkDataConfig,
+    CsvBenchmarkDataConfig,
+)
+from matchescu.matching.evaluation.data.benchmark import (
+    MagellanBenchmarkDataFactory,
+    CsvBenchmarkDataFactory,
+)
 
 
 def new_benchmark_data_factory(params: AnyDatasetConfig):

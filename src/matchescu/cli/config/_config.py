@@ -20,7 +20,7 @@ class DittoModelConfig(ModelConfig):
 
 class DeepMatcherModelConfig(ModelConfig):
     type: Literal["deepmatcher"] = "deepmatcher"
-    tokenizer:str = "google-bert/bert-base-uncased"
+    tokenizer: str = "google-bert/bert-base-uncased"
     attribute_map: dict[str, str] | None = None
     attribute_vector_length: int = 30
     excluded_attributes: list[str | int] | None = None
@@ -39,12 +39,14 @@ class ComparisonSpaceConfig(ConfigModel):
     match_bridge_ratio: float = 3.5
 
     has_header: bool = True
-    left_id_col: str | int = 0,
+    left_id_col: str | int = (0,)
     left_source_col: str | int | None = None
     right_id_col: str | int = 1
     right_source_col: str | int | None = None
 
-    def to_csv_params(self, source_fallback: str|None = None) -> CsvComparisonSpaceFileParams:
+    def to_csv_params(
+        self, source_fallback: str | None = None
+    ) -> CsvComparisonSpaceFileParams:
         return CsvComparisonSpaceFileParams(
             self.has_header,
             source_fallback,
