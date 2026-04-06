@@ -46,8 +46,8 @@ def main(ctx: click.Context, config_file: str | PathLike):
     asymmetry = []
     with Progress() as progress:
         for ds_config in cfg.config_obj.benchmark_data:
-            factory = new_benchmark_data_factory(ds_config.dataset)
-            benchmark_data = factory.create(root_dir)
+            builder = new_benchmark_data_factory(ds_config.dataset, root_dir)
+            benchmark_data = builder.load_data().create()
             ds_dir = root_dir / ds_config.dataset.directory
             cs = load_comparison_space(
                 benchmark_data, ds_dir, ds_config.comparison_space

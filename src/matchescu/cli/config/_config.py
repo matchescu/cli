@@ -44,6 +44,8 @@ class ComparisonSpaceConfig(ConfigModel):
     right_id_col: str | int = 1
     right_source_col: str | int | None = None
 
+    excluded_files: list[str] | None = None
+
     def to_csv_params(
         self, source_fallback: str | None = None
     ) -> CsvComparisonSpaceFileParams:

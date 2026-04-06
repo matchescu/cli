@@ -10,9 +10,16 @@ from ._cli_runtime import CommonCliOptions
 @click.option(
     "-d",
     "--root-dir",
-    type=click.Path(exists=True, file_okay=False, dir_okay=True, writable=True, readable=True, resolve_path=True),
+    type=click.Path(
+        exists=True,
+        file_okay=False,
+        dir_okay=True,
+        writable=True,
+        readable=True,
+        resolve_path=True,
+    ),
     default=Path.cwd(),
-    help="root directory for all commands"
+    help="root directory for all commands",
 )
 @click.pass_context
 def matchescu(ctx: click.Context, verbose: bool, root_dir: Path):

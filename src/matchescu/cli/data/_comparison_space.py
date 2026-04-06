@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Iterable
 
 from matchescu.cli.config._config import ComparisonSpaceConfig
 from matchescu.comparison_space.persistence import CsvPersistence
@@ -7,6 +8,19 @@ from matchescu.matching.evaluation.data.generation import (
     GroundTruthComparisonSpaceGenerator,
 )
 from matchescu.reference_store.comparison_space import BinaryComparisonSpace
+from matchescu.typing import EntityReferenceIdentifier as RefId
+
+
+def _get_excluded(
+    data: BenchmarkData, data_dir: Path, cs_config: ComparisonSpaceConfig
+) -> Iterable[tuple[RefId, RefId]]:
+    if not cs_config.excluded_files:
+        yield from ()
+    for file in cs_config.excluded_files:
+        path = data_dir / file
+        if not path.exists() or not path.is_file():
+            continue
+        yield from CsvPersistence(path).read(cs_config.to_csv_params(data.name))
 
 
 def load_comparison_space(
@@ -44,6 +58,7 @@ def load_comparison_space(
             max_total_samples=cs_config.sample_count,
             save_comparisons=True,
             save_clusters=True,
+            excluded=_get_excluded(data, data_dir, cs_config),
         )
         cluster_file_path = file_path.parent / f"{file_path.stem}-clusters.csv"
         return csg(file_path, cluster_file_path)
