@@ -39,6 +39,7 @@ logging.getLogger("transformers.modeling_parallel_utils").setLevel(logging.ERROR
 )
 @click.pass_context
 def main(ctx: click.Context, config_file: str | PathLike):
+    """Evaluate parameter input order matcher asymmetry."""
     root_dir = get_options(ctx).root_dir
     config_file = Path(config_file).absolute()
     cfg = JSONConfig(config_file, EvaluationConfig).load()
