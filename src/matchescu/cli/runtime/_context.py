@@ -11,5 +11,5 @@ class CommonCliOptions:
     root_dir: Path | None = field(default=None)
 
 
-def get_options(ctx: Context) -> CommonCliOptions:
-    return cast(CommonCliOptions, ctx.obj)
+def get_options[T](ctx: Context) -> T:
+    return cast(T, ctx.obj)

@@ -2,7 +2,7 @@ from pathlib import Path
 
 import click
 
-from ._cli_runtime import CommonCliOptions
+from .runtime import CommonCliOptions
 
 
 @click.group("matchescu")

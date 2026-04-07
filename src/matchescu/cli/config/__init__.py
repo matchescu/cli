@@ -5,7 +5,7 @@ from ._config import (
     DittoModelConfig,
 )
 from ._config_adapters import new_benchmark_data_factory
-from ._manager import JSONConfig
+from ._manager import JSONConfig, TConfig
 
 __all__ = [
     "EvaluationConfig",
@@ -14,4 +14,5 @@ __all__ = [
     "AnyModelConfig",
     "DeepMatcherModelConfig",
     "DittoModelConfig",
+    "TConfig"
 ]
