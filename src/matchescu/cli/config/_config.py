@@ -12,13 +12,13 @@ class ModelConfig(ConfigModel):
     tokenizer: str
 
 
-class DittoModelConfig(ModelConfig):
+class DittoConfig(ModelConfig):
     type: Literal["ditto"] = "ditto"
     lhs_columns: list[str] | None = None
     rhs_columns: list[str] | None = None
 
 
-class DeepMatcherModelConfig(ModelConfig):
+class DeepMatcherConfig(ModelConfig):
     type: Literal["deepmatcher"] = "deepmatcher"
     tokenizer: str = "google-bert/bert-base-uncased"
     attribute_map: dict[str, str] | None = None
@@ -26,8 +26,8 @@ class DeepMatcherModelConfig(ModelConfig):
     excluded_attributes: list[str | int] | None = None
 
 
-AnyModelConfig = Annotated[
-    Union[DittoModelConfig, DeepMatcherModelConfig],
+AnyMatcherConfig = Annotated[
+    Union[DittoConfig, DeepMatcherConfig],
     Field(discriminator="type"),
 ]
 
@@ -64,6 +64,11 @@ class EvaluationBenchmarkConfig(ConfigModel):
     comparison_space: ComparisonSpaceConfig
 
 
+class ClusteringConfig(ConfigModel):
+    algorithms: list[str]
+
+
 class EvaluationConfig(ConfigModel):
     benchmark_data: list[EvaluationBenchmarkConfig]
-    models: list[AnyModelConfig]
+    matching: list[AnyMatcherConfig] | None = None
+    clustering: ClusteringConfig | None = None

@@ -2,7 +2,9 @@ import os
 from pathlib import Path
 
 
-def make_absolute_path(path: str | os.PathLike, parent_dir: str | os.PathLike | None = None) -> Path:
+def make_absolute_path(
+    path: str | os.PathLike, parent_dir: str | os.PathLike | None = None
+) -> Path:
     path = Path(path)
     if path.is_absolute():
         return path

@@ -39,12 +39,12 @@ def main(ctx: click.Context):
                 benchmark_data, ds_dir, ds_config.comparison_space
             )
             cs_refs = list(map(benchmark_data.id_table.get_all, cs))
-            total_comparisons = len(cs) * len(cfg.models)
+            total_comparisons = len(cs) * len(cfg.matching)
             ds_task = progress.add_task(
                 f"dataset {benchmark_data.name}", total=total_comparisons
             )
 
-            for model_config in cfg.models:
+            for model_config in cfg.matching:
                 model_task = progress.add_task(model_config.name, total=len(cs))
                 matcher = new_matcher(model_config, root_dir, benchmark_data.name)
                 model_results = []

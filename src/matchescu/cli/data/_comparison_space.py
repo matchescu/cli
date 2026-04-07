@@ -3,6 +3,7 @@ from typing import Iterable
 
 from matchescu.cli.config._config import ComparisonSpaceConfig
 from matchescu.comparison_space.persistence import CsvPersistence
+from matchescu.matching.evaluation.ground_truth import read_clusters_csv
 from matchescu.matching.evaluation.data.benchmark import BenchmarkData
 from matchescu.matching.evaluation.data.generation import (
     GroundTruthComparisonSpaceGenerator,
@@ -62,3 +63,20 @@ def load_comparison_space(
         )
         cluster_file_path = file_path.parent / f"{file_path.stem}-clusters.csv"
         return csg(file_path, cluster_file_path)
+
+
+def load_comparison_space_clusters(csv_path: Path) -> frozenset[frozenset[RefId]]:
+    """Load the clusters saved by ``GroundTruthComparisonSpaceGenerator``.
+
+    :param csv_path: CSV file containing the clustering information
+    """
+    if not csv_path.exists():
+        raise FileNotFoundError(csv_path)
+    clusters = read_clusters_csv(
+        csv_path,
+        has_header=True,
+        id_col=0,
+        source_col=1,
+        label_col=2,
+    )
+    return frozenset(frozenset(cluster) for cluster_no, cluster in clusters.items())

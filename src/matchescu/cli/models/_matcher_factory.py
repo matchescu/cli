@@ -3,16 +3,16 @@ from pathlib import Path
 from transformers import AutoTokenizer
 
 from matchescu.cli.config import (
-    DeepMatcherModelConfig,
-    DittoModelConfig,
-    AnyModelConfig,
+    DeepMatcherConfig,
+    DittoConfig,
+    AnyMatcherConfig,
 )
 from matchescu.matching.matchers import DeepMatcherSimilarity, DittoSimilarity
 from matchescu.similarity import Matcher
 
 
 def _new_deepmatcher(
-    config: DeepMatcherModelConfig, file_path: Path
+    config: DeepMatcherConfig, file_path: Path
 ) -> DeepMatcherSimilarity:
     return DeepMatcherSimilarity(
         AutoTokenizer.from_pretrained(config.tokenizer),
@@ -22,7 +22,7 @@ def _new_deepmatcher(
     ).load_from_file(file_path)
 
 
-def _new_ditto(config: DittoModelConfig, file_path: Path) -> DittoSimilarity:
+def _new_ditto(config: DittoConfig, file_path: Path) -> DittoSimilarity:
     return DittoSimilarity(
         AutoTokenizer.from_pretrained(config.tokenizer),
         left_cols=config.lhs_columns,
@@ -31,12 +31,12 @@ def _new_ditto(config: DittoModelConfig, file_path: Path) -> DittoSimilarity:
 
 
 _CONFIG_TYPE_TO_MATCHER_MAP = {
-    DeepMatcherModelConfig: _new_deepmatcher,
-    DittoModelConfig: _new_ditto,
+    DeepMatcherConfig: _new_deepmatcher,
+    DittoConfig: _new_ditto,
 }
 
 
-def new_matcher(config: AnyModelConfig, root_dir: Path, dataset: str) -> Matcher:
+def new_matcher(config: AnyMatcherConfig, root_dir: Path, dataset: str) -> Matcher:
     factory = _CONFIG_TYPE_TO_MATCHER_MAP.get(config.__class__)
     if factory is None:
         raise ValueError(f"unknown model config '{config.__class__}'")

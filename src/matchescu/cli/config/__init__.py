@@ -1,8 +1,8 @@
 from ._config import (
     EvaluationConfig,
-    AnyModelConfig,
-    DeepMatcherModelConfig,
-    DittoModelConfig,
+    AnyMatcherConfig,
+    DeepMatcherConfig,
+    DittoConfig,
 )
 from ._config_adapters import new_benchmark_data_factory
 from ._manager import JSONConfig, TConfig
@@ -11,8 +11,8 @@ __all__ = [
     "EvaluationConfig",
     "new_benchmark_data_factory",
     "JSONConfig",
-    "AnyModelConfig",
-    "DeepMatcherModelConfig",
-    "DittoModelConfig",
-    "TConfig"
+    "AnyMatcherConfig",
+    "DeepMatcherConfig",
+    "DittoConfig",
+    "TConfig",
 ]
