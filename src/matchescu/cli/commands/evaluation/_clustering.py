@@ -32,8 +32,8 @@ from pyresolvemetrics import (
     twi,
 )
 
-
 from ._cmd_group import evaluate, EvalOptions
+from ._input_order import InputOrder, validate_input_order_option
 
 CLUSTERING_ALGOS: dict[str, ClusteringAlgorithm[RefId]] = {
     "WCC": WeaklyConnectedComponents,
@@ -58,26 +58,32 @@ CLUSTER_METRICS = [
 
 
 def _load_reference_graphs(
-    root_dir, graph_root, benchmark_data, matcher_configs
+    root_dir, graph_root, benchmark_data, matcher_configs, input_orders
 ) -> dict:
     result = {}
     for match_cfg in matcher_configs:
-        gml_path = graph_root / benchmark_data.name / match_cfg.name / "graph.gml"
-        matcher = new_matcher(match_cfg, root_dir, benchmark_data.name)
-        # 'load' overrides whether graph is directed or not
-        graph = ReferenceGraph(matcher).load(GmlGraphPersistence(gml_path))
-        result.setdefault(match_cfg.name, graph)
+        for order in input_orders:
+            gml_path = (
+                graph_root / benchmark_data.name / match_cfg.name / f"{order}-graph.gml"
+            )
+            matcher = new_matcher(match_cfg, root_dir, benchmark_data.name)
+            # 'load' overrides whether graph is directed or not
+            graph = ReferenceGraph(matcher).load(GmlGraphPersistence(gml_path))
+            result.setdefault(match_cfg.name, []).append((order, graph))
     return result
 
 
 def _load_dataset_matcher_data(
-    cfg: EvaluationConfig | None, root_dir: Path | None, graph_root: Path
+    cfg: EvaluationConfig | None,
+    root_dir: Path | None,
+    graph_root: Path,
+    input_orders: list[str],
 ) -> dict[
     str,
     tuple[
         set[RefId],
         frozenset[frozenset[RefId]],
-        dict[str, ReferenceGraph[EntityReference]],
+        dict[str, list[tuple[str, ReferenceGraph[EntityReference]]]],
     ],
 ]:
     dataset_matcher_data = {}
@@ -96,7 +102,7 @@ def _load_dataset_matcher_data(
             clusters_path, benchmark_data, cs, all_ref_ids
         )
         reference_graphs = _load_reference_graphs(
-            root_dir, graph_root, benchmark_data, cfg.matching
+            root_dir, graph_root, benchmark_data, cfg.matching, input_orders
         )
         dataset_matcher_data.setdefault(
             benchmark_data.name, (all_ref_ids, true_clusters, reference_graphs)
@@ -136,11 +142,23 @@ def _compute_metrics(
     type=click.Path(dir_okay=False, writable=True, resolve_path=True),
     help="directory where reference graphs will be exported in GML format",
 )
+@click.option(
+    "-i",
+    "--input-order",
+    "input_orders",
+    required=False,
+    type=click.Choice(InputOrder),
+    multiple=True,
+    default=[InputOrder.normal],
+    callback=validate_input_order_option,
+    help="input order to evaluate the matcher in (specify up to 3)",
+)
 @click.pass_context
 def main(
     ctx: click.Context,
     reference_graph_dir: str | os.PathLike,
     stats_csv_path: str | os.PathLike,
+    input_orders: list[InputOrder],
 ):
     """Evaluate a matcher's quality in controlled settings."""
     eval_opts: EvalOptions[EvaluationConfig] = get_options(ctx)
@@ -153,7 +171,9 @@ def main(
     n_clusterers = len(cfg.clustering.algorithms)
     n_matchers = len(cfg.matching)
     total_steps = n_clusterers * n_datasets * n_matchers * n_metrics
-    dataset_matcher_data = _load_dataset_matcher_data(cfg, root_dir, graph_root)
+    dataset_matcher_data = _load_dataset_matcher_data(
+        cfg, root_dir, graph_root, input_orders
+    )
 
     stats = []
     with Progress() as progress:
@@ -170,22 +190,24 @@ def main(
                 true_clusters,
                 reference_graphs,
             ) in dataset_matcher_data.items():
-                for matcher_name, graph in reference_graphs.items():
-                    clustering_algo = algo_factory(all_ref_ids, threshold=0.0)
-                    stats.append(
-                        {
-                            "dataset": ds_name,
-                            "algorithm": algo_key,
-                            "matcher": matcher_name,
-                            **_compute_metrics(
-                                true_clusters,
-                                clustering_algo,
-                                graph,
-                                progress,
-                                task,
-                            ),
-                        }
-                    )
+                clustering_algo = algo_factory(all_ref_ids, threshold=0.0)
+                for matcher_name, graphs in reference_graphs.items():
+                    for order, graph in graphs:
+                        stats.append(
+                            {
+                                "dataset": ds_name,
+                                "algorithm": algo_key,
+                                "matcher": matcher_name,
+                                "input_order": order,
+                                **_compute_metrics(
+                                    true_clusters,
+                                    clustering_algo,
+                                    graph,
+                                    progress,
+                                    task,
+                                ),
+                            }
+                        )
 
     stats_df = pl.DataFrame(stats)
     stats_df.write_csv(csv_path)
