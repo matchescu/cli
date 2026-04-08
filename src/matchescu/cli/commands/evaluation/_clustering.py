@@ -89,12 +89,12 @@ def _load_dataset_matcher_data(
         all_ref_ids = set(x for cmp in cs for x in cmp)
         cs_path = ds_dir / ds_config.comparison_space.file_name
 
-        clusters_path = ds_dir / f"{cs_path.stem}-clusters.csv"
-        true_clusters = list(load_comparison_space_clusters(clusters_path))
-        clustered_refs = set(x for cluster in true_clusters for x in cluster)
-        for ref_id in all_ref_ids - clustered_refs:
-            true_clusters.append(frozenset([ref_id]))
-        true_clusters = frozenset(true_clusters)
+        clusters_path = ds_dir / (
+            ds_config.clusters_file_name or f"{cs_path.stem}-clusters.csv"
+        )
+        true_clusters = load_comparison_space_clusters(
+            clusters_path, benchmark_data, cs, all_ref_ids
+        )
         reference_graphs = _load_reference_graphs(
             root_dir, graph_root, benchmark_data, cfg.matching
         )
