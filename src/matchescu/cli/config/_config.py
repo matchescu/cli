@@ -9,7 +9,7 @@ from matchescu.matching.config import ConfigModel, AnyDatasetConfig
 class ModelConfig(ConfigModel):
     name: str
     path: str
-    tokenizer: str
+    tokenizer: str | None = None
 
 
 class DittoConfig(ModelConfig):

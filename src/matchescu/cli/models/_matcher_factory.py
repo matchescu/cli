@@ -24,7 +24,7 @@ def _new_deepmatcher(
 
 def _new_ditto(config: DittoConfig, file_path: Path) -> DittoSimilarity:
     return DittoSimilarity(
-        AutoTokenizer.from_pretrained(config.tokenizer),
+        AutoTokenizer.from_pretrained(config.tokenizer or config.name),
         left_cols=config.lhs_columns,
         right_cols=config.rhs_columns,
     ).load_from_file(file_path)
