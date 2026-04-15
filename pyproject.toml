@@ -21,6 +21,7 @@ pyresolvemetrics = "^0.3.5"
 matchescu-reference-extraction = {path = "../reference-extraction", develop = true}
 rapidfuzz = "^3.14.3"
 matchescu-reference-store = {path = "../reference-store", develop = true}
+scikit-learn = "^1.8.0"
 
 [tool.poetry.scripts]
 matchescu = "matchescu.cli:matchescu"
