@@ -13,7 +13,7 @@ class ModelConfig(ConfigModel):
 
 
 class DittoConfig(ModelConfig):
-    type: Literal["ditto"] = "ditto"
+    type: Literal["ditto", "multiclass"] = "ditto"
     lhs_columns: list[str] | None = None
     rhs_columns: list[str] | None = None
 
@@ -34,9 +34,9 @@ AnyMatcherConfig = Annotated[
 
 class ComparisonSpaceConfig(ConfigModel):
     file_name: str
-    sample_count: int
-    neg_pos_ratio: float = 8.0
-    match_bridge_ratio: float = 3.5
+    sample_count: int | None = None
+    neg_pos_ratio: float = 4.0
+    match_bridge_ratio: float = 2.0
 
     has_header: bool = True
     left_id_col: str | int = (0,)
@@ -73,3 +73,13 @@ class EvaluationConfig(ConfigModel):
     benchmark_data: list[EvaluationBenchmarkConfig]
     matching: list[AnyMatcherConfig] | None = None
     clustering: ClusteringConfig | None = None
+
+
+class AmbiguityDataConfig(ConfigModel):
+    dataset: AnyDatasetConfig
+    ambiguity_targets: list[str] = None
+    min_ambiguity: float = None
+
+
+class AmbiguityConfig(ConfigModel):
+    input_data: list[AmbiguityDataConfig]

@@ -1,6 +1,13 @@
-from ._cmd_group import evaluate
 from ._asymmetry import main as evaluate_asymmetry
-from ._matching import main as evaluate_matching
 from ._clustering import main as evaluate_clustering
+from ._cmd_group import evaluate
+from ._confusion_matrix import main as compute_confusion_matrix
+from ._matching import main as evaluate_matching
 
-__all__ = ["evaluate_asymmetry", "evaluate_matching", "evaluate_clustering", "evaluate"]
+__all__ = [
+    "evaluate_asymmetry",
+    "evaluate_matching",
+    "evaluate_clustering",
+    "evaluate",
+    "compute_confusion_matrix",
+]

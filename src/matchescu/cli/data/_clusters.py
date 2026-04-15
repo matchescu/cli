@@ -30,6 +30,7 @@ def load_comparison_space_clusters(
         aren't part of clusters and should be treated as singletons
     """
     path = Path(path)
+    max_id = 0
     if path.exists():
         clusters = read_clusters_csv(
             path,
@@ -38,21 +39,24 @@ def load_comparison_space_clusters(
             source_col=1,
             label_col=2,
         )
+        clustered_refs = set(
+            ref_id for cluster in clusters.values() for ref_id in cluster
+        )
+        max_id = max(clusters.keys())
     else:
         df = downscale_clusters(data, cs, path)
         clusters = {}
         clustered_refs = set()
-        max_id = 0
         for row in df.iter_rows(named=True):
             ref_id = RefId(label=row["id"], source=row["source"])
             cluster_id = int(row["cluster_id"])
             max_id = max(cluster_id, max_id)
             clusters.setdefault(cluster_id, set()).add(ref_id)
             clustered_refs.add(ref_id)
-        singletons = all_ref_ids - clustered_refs
-        for ref_id in singletons:
-            clusters.setdefault(max_id + 1, set()).add(ref_id)
-            max_id += 1
+    singletons = all_ref_ids - clustered_refs
+    for ref_id in singletons:
+        clusters.setdefault(max_id + 1, set()).add(ref_id)
+        max_id += 1
     return frozenset(frozenset(cluster) for cluster_no, cluster in clusters.items())
 
 

@@ -8,20 +8,21 @@ from matchescu.cli.config import EvaluationConfig, new_benchmark_data_factory
 from matchescu.cli.data import load_comparison_space
 from matchescu.cli.models import new_matcher
 from matchescu.cli.runtime import get_options, make_absolute_path
+from matchescu.matching import Matcher
 from matchescu.similarity import ReferenceGraph, GmlGraphPersistence
 from matchescu.typing import EntityReference
 from pyresolvemetrics import precision, recall, f1
+from sklearn.metrics import matthews_corrcoef
 
 from ._cmd_group import evaluate, EvalOptions
 from ._input_order import InputOrder, validate_input_order_option
 
 
-def _compute_metrics(
+def _compute_binary_classifier_metrics(
     true_matches: set, graph: ReferenceGraph, input_order: str
 ) -> dict:
-    actual = set(
-        graph.matches(min_weight=0.0)
-    )  # ensures we don't filter out any matches
+    # ensure we don't filter out any matches
+    actual = set(graph.matches(min_weight=0.0))
     return {
         "input_order": input_order,
         "precision": precision(true_matches, actual),
@@ -30,17 +31,38 @@ def _compute_metrics(
     }
 
 
-def _add_normal(g: ReferenceGraph, x: EntityReference, y: EntityReference):
-    g.add(x, y)
+def _compute_multiclass_metrics(cs_true_matches, g, order):
+    y_true = list(cs_true_matches.values())
+    y_pred = []
+    for a, b in cs_true_matches:
+        if g.has_edge(a, b) and g.has_edge(b, a):
+            y_pred.append(1)
+        elif g.has_edge(a, b):
+            y_pred.append(2)
+        elif g.has_edge(b, a):
+            y_pred.append(3)
+        else:
+            y_pred.append(0)
+    return {"input_order": order, "mcc": matthews_corrcoef(y_true, y_pred)}
 
 
-def _add_reverse(g: ReferenceGraph, x: EntityReference, y: EntityReference):
-    g.add(y, x)
+def _add_normal(
+    g: ReferenceGraph, matcher: Matcher, x: EntityReference, y: EntityReference
+):
+    g.add(matcher(x, y))
 
 
-def _add_both(g: ReferenceGraph, x: EntityReference, y: EntityReference):
-    g.add(x, y)
-    g.add(y, x)
+def _add_reverse(
+    g: ReferenceGraph, matcher: Matcher, x: EntityReference, y: EntityReference
+):
+    g.add(matcher(y, x))
+
+
+def _add_both(
+    g: ReferenceGraph, matcher: Matcher, x: EntityReference, y: EntityReference
+):
+    g.add(matcher(x, y))
+    g.add(matcher(y, x))
 
 
 @evaluate.command("matching")
@@ -97,9 +119,7 @@ def main(
             cs = load_comparison_space(
                 benchmark_data, ds_dir, ds_config.comparison_space
             )
-            cs_true_matches = set(
-                cmp for cmp in cs if cmp in benchmark_data.true_matches
-            )
+            cs_pair_gt = {cmp: benchmark_data.true_matches.get(cmp, 0) for cmp in cs}
             cs_refs = list(map(benchmark_data.id_table.get_all, cs))
             total_comparisons = len(cs) * len(cfg.matching)
             ds_task = progress.add_task(
@@ -110,23 +130,32 @@ def main(
                 model_task = progress.add_task(model_config.name, total=len(cs))
                 matcher = new_matcher(model_config, root_dir, benchmark_data.name)
                 graphs = {
-                    order: ReferenceGraph(matcher=matcher, directed=True)
-                    for order in input_orders
+                    order: ReferenceGraph(directed=True) for order in input_orders
                 }
                 for x, y in cs_refs:
                     for order, g in graphs.items():
-                        input_order_map[InputOrder(order)](g, x, y)
+                        add_to_graph = input_order_map[InputOrder(order)]
+                        add_to_graph(g, matcher, x, y)
                     progress.update(model_task, advance=1)
                     progress.update(ds_task, advance=1)
                 graph_dir = output_path / benchmark_data.name / model_config.name
                 graph_dir.mkdir(parents=True, exist_ok=True)
                 for order, g in graphs.items():
                     g.save(GmlGraphPersistence(graph_dir / f"{order}-graph.gml"))
+                    if model_config.type != "multiclass":
+                        true_matches = set(
+                            cmp for cmp, label in cs_pair_gt.items() if label > 0
+                        )
+                        metrics = _compute_binary_classifier_metrics(
+                            true_matches, g, order
+                        )
+                    else:
+                        metrics = _compute_multiclass_metrics(cs_pair_gt, g, order)
                     stats.append(
                         {
                             "dataset": benchmark_data.name,
                             "model": model_config.name,
-                            **_compute_metrics(cs_true_matches, g, order),
+                            **metrics,
                         }
                     )
     stats_df = pl.DataFrame(stats)

@@ -1,20 +1,21 @@
 import re
 
 from difflib import SequenceMatcher
-from functools import reduce, partial
 from itertools import combinations, permutations
+from os import PathLike
 from pathlib import Path
-from typing import Iterable, Set
+from typing import Set
 
+import click
 import networkx as nx
 import polars as pl
+from click import Context
+from rich.progress import Progress
 
 from matchescu.cli._cmd_group import matchescu
-from matchescu.data import Record
-from matchescu.extraction import Traits, RecordExtraction, single_record
-from matchescu.extraction.csv import CsvFile
-from matchescu.matching.evaluation.data.splits import SplitGenerator
-from matchescu.reference_store.id_table import InMemoryIdTable
+from matchescu.cli.config import JSONConfig, AmbiguityConfig, new_benchmark_data_factory
+from matchescu.cli.runtime import get_options, make_absolute_path
+from matchescu.reference_store.id_table import IdTable
 from matchescu.typing import (
     EntityReferenceIdentifier as RefId,
     EntityReference,
@@ -70,35 +71,25 @@ class AmbiguityGenerator:
 
     def __init__(
         self,
-        data_sources: list[CsvFile],
+        id_table: IdTable,
         mapping_gt: dict[ComparisonData, int],
         ambiguity_target_properties: list[str] = None,
         string_degradation_patterns: list[str] = None,
-        id_col: str | int = 0,
+        min_ambiguity: float | None = None,
     ) -> None:
         self._mapping_gt = mapping_gt
-        self._id_col = id_col
-        self._id_table = reduce(self.__ingest_all, data_sources, InMemoryIdTable())
+        self._id_table = id_table
         self._cluster_id_map, self._cluster_count = self.__get_clusters()
         self._degradation_patterns = (
             string_degradation_patterns or self._DEFAULT_DEGRADATION_PATTERNS
         )
         self._target_properties = set(ambiguity_target_properties or [])
-
-    def __new_ref_id(self, records: Iterable[Record], source: str):
-        dominant_record = next(iter(records))
-        return RefId(label=dominant_record[self._id_col], source=source)
-
-    def __ingest_all(
-        self, id_table: InMemoryIdTable, data_source: CsvFile
-    ) -> InMemoryIdTable:
-        id_factory = partial(self.__new_ref_id, source=data_source.name)
-        extract_entity_references = RecordExtraction(
-            data_source, id_factory, single_record
+        n_total_steps = 3 * self._cluster_count
+        self._progress = Progress()
+        self._main_task = self._progress.add_task(
+            description="create ambiguous data", total=n_total_steps
         )
-        for ref in extract_entity_references():
-            id_table.put(ref)
-        return id_table
+        self._min_ambiguity = min_ambiguity
 
     def __get_clusters(self):
         ref_ids = list(self._mapping_gt)
@@ -241,20 +232,28 @@ class AmbiguityGenerator:
     def _get_cluster_representatives(self):
         cluster_reps = {}
         for cluster_id, ref_ids in self._cluster_id_map.items():
+            self._progress.update(
+                self._main_task, description=f"nominating [{cluster_id}] cluster rep"
+            )
             candidates = list(ref_ids)
             refs = list(self._id_table.get_all(candidates))
-            mean_ambiguities = []
-            for i, ref in enumerate(refs):
-                others = refs[:i] + refs[i + 1 :]
-                ambiguity_scores = [self._ambiguity_score(ref, x) for x in others]
-                mean_ambiguities.append(sum(ambiguity_scores) / len(ambiguity_scores))
-            max_ambiguity = 0
             rep_idx = 0
-            for i, ambiguity in enumerate(mean_ambiguities):
-                if max_ambiguity < ambiguity:
-                    max_ambiguity = ambiguity
-                    rep_idx = i
+            if len(refs) > 1:
+                mean_ambiguities = []
+                for i, ref in enumerate(refs):
+                    others = refs[:i] + refs[i + 1 :]
+                    ambiguity_scores = [self._ambiguity_score(ref, x) for x in others]
+                    mean_ambiguities.append(
+                        sum(ambiguity_scores) / len(ambiguity_scores)
+                    )
+                max_ambiguity = 0
+                rep_idx = 0
+                for i, ambiguity in enumerate(mean_ambiguities):
+                    if max_ambiguity < ambiguity:
+                        max_ambiguity = ambiguity
+                        rep_idx = i
             cluster_reps[cluster_id] = candidates[rep_idx]
+            self._progress.advance(self._main_task)
         return cluster_reps
 
     def _find_closest_rep(self, cluster_reps):
@@ -264,7 +263,12 @@ class AmbiguityGenerator:
         }
         result = {}
         for cluster_id, ref in cluster_refs.items():
+            self._progress.update(
+                self._main_task,
+                description=f"finding [{cluster_id}] closest cluster rep",
+            )
             if cluster_id in result:
+                self._progress.advance(self._main_task)
                 continue
             other_refs = {
                 other_id: other_ref
@@ -281,7 +285,10 @@ class AmbiguityGenerator:
                 if best_ambiguity is None or score > best_ambiguity:
                     best_ambiguity = score
                     best_id = other_id
-            result[cluster_id] = (best_id, best_ambiguity, other_refs[best_id])
+            if self._min_ambiguity is None or best_ambiguity >= self._min_ambiguity:
+                result[cluster_id] = (best_id, best_ambiguity, other_refs[best_id])
+            self._progress.advance(self._main_task)
+
         return result
 
     @classmethod
@@ -435,15 +442,7 @@ class AmbiguityGenerator:
         val_b: str,
         n: int = 5,
         bridge_terms: list[str] | None = None,
-    ) -> list[tuple[str, float, float, float]]:
-        """Return the *n* most ambiguous strings between *val_a* and *val_b*.
-
-        Returns
-        -------
-        list of (candidate, ambiguity_score, sim_to_a, sim_to_b)
-            Sorted by *ambiguity_score* (harmonic mean of both similarities),
-            highest first.
-        """
+    ) -> list[tuple[str, ...]]:
         bt = bridge_terms if bridge_terms is not None else DEFAULT_BRIDGE_TERMS
         pool = cls._candidates(val_a, val_b, bt)
         ranked = sorted(
@@ -459,7 +458,12 @@ class AmbiguityGenerator:
 
         ambiguous_refs = {}
         for cluster_id, start_ref in start_refs.items():
+            self._progress.update(
+                self._main_task,
+                description=f"generating ambiguous cluster [{cluster_id}] reference",
+            )
             if cluster_id not in closest_correspondents:
+                self._progress.advance(self._main_task)
                 continue
             target_cluster_id, score, target = closest_correspondents[cluster_id]
             source_dict = start_ref.as_dict()
@@ -487,18 +491,22 @@ class AmbiguityGenerator:
                         )[0][0]
                 else:
                     ref_properties[k] = None
-            new_ref = EntityReference(RefId(max_id + 1, "generated"), ref_properties)
+            new_ref = EntityReference(
+                RefId(max_id + 1, "ambiguity-generator"), ref_properties
+            )
             self._id_table.put(new_ref)
             ambiguous_refs[cluster_id] = new_ref.id
             max_id += 1
+            self._progress.advance(self._main_task)
         return ambiguous_refs
 
     def __call__(self) -> tuple[
-        InMemoryIdTable,
+        IdTable,
         dict[int, Set[RefId]],
         dict[tuple[RefId, RefId], int],
         dict[tuple[RefId, RefId], int],
     ]:
+        self._progress.start()
         cluster_reps = self._get_cluster_representatives()
         closest_reps = self._find_closest_rep(cluster_reps)
         ambiguous_refs = self._generate_ambiguous_references(cluster_reps, closest_reps)
@@ -519,102 +527,108 @@ class AmbiguityGenerator:
                 fwd_comparison = (ref.id, ref.target.id)
                 rev_comparison = (ref.target.id, ref.id)
                 undirected_gt[fwd_comparison] = 1
-                directed_gt[fwd_comparison] = 3
                 directed_gt[rev_comparison] = 2
 
         return self._id_table, cluster_gt, directed_gt, undirected_gt
 
 
-def load_data(datadir, rec_fname, traits, mapping_fname):
-    ds = CsvFile(datadir / rec_fname, traits, has_header=True)
-    df = pl.read_csv(
-        datadir / mapping_fname,
-        has_header=False,
-        schema={"left_id": pl.Int32, "right_id": pl.Int32},
-    )
-    mappings = {
-        (
-            RefId(label=row["left_id"], source=ds.name),
-            RefId(label=row["right_id"], source=ds.name),
-        ): 1
-        for row in df.iter_rows(named=True)
-    }
-    return ds, mappings
-
-
 @matchescu.command("ambiguity-generator")
-def main():
-    """Take an existing benchmark dataset and introduce ambiguous text data."""
-    traits = list(Traits().string(["affil1"]))
-    ds, matching_gt = load_data(
-        DIR, "affiliationstrings_ids.csv", traits, "affiliationstrings_mapping.csv"
+@click.option(
+    "-c",
+    "--config-file",
+    required=True,
+    type=click.Path(
+        exists=True, file_okay=True, dir_okay=False, readable=True, resolve_path=True
+    ),
+    help="configuration file for the ambiguity generator",
+)
+@click.option(
+    "-O",
+    "--output-dir",
+    required=True,
+    type=click.Path(
+        exists=True, file_okay=False, dir_okay=True, writable=True, resolve_path=True
+    ),
+    help="root directory where ambiguous datasets corresponding to the configured input datasets are generated",
+)
+@click.pass_context
+def main(ctx: Context, config_file: str | PathLike, output_dir: str | PathLike):
+    """Introduce ambiguous data into existing dataset."""
+    root_dir = get_options(ctx).root_dir
+    config: AmbiguityConfig = (
+        JSONConfig(make_absolute_path(config_file, root_dir), AmbiguityConfig)
+        .load()
+        .config_obj
     )
-    introduce_ambiguity = AmbiguityGenerator([ds], matching_gt, ["affil1"], None, "id1")
-    id_table, cluster_gt, directed_gt, undirected_gt = introduce_ambiguity()
+    output_dir = make_absolute_path(output_dir, root_dir)
 
-    data_df = pl.DataFrame(
-        [
+    for ds_idx, input_cfg in enumerate(config.input_data):
+        print("processing", input_cfg.dataset.directory)
+        builder = new_benchmark_data_factory(input_cfg.dataset, root_dir)
+        data = builder.load_data().create()
+        introduce_ambiguity = AmbiguityGenerator(
+            data.id_table,
+            data.true_matches,
+            input_cfg.ambiguity_targets,
+            min_ambiguity=input_cfg.min_ambiguity,
+        )
+        id_table, cluster_gt, directed_gt, undirected_gt = introduce_ambiguity()
+        table_ = [
             {
-                "id1": ref.id.label,
-                "source": ref.id.source,
-                "affil1": ref.affil1,
+                "id": ref.id.label,
+                "source": str(ref.id.source),
+                **{
+                    k: v
+                    for k, v in ref.as_dict().items()
+                    if k not in {"source", "target", "target_cluster_id"}
+                },
             }
             for ref in id_table
         ]
-    )
-    clusters_df = pl.DataFrame(
-        [
-            {"id": ref_id.label, "source": ref_id.source, "cluster_id": cluster_id}
-            for cluster_id, ref_ids in cluster_gt.items()
-            for ref_id in ref_ids
-        ]
-    )
-    directed_df = pl.DataFrame(
-        [
-            {
-                "left_id": left_id.label,
-                "left_source": left_id.source,
-                "right_id": right_id.label,
-                "right_source": right_id.source,
-                "label": c,
+        data_df = pl.DataFrame(table_)
+        clusters_df = pl.DataFrame(
+            [
+                {"id": ref_id.label, "source": ref_id.source, "cluster_id": cluster_id}
+                for cluster_id, ref_ids in cluster_gt.items()
+                for ref_id in ref_ids
+            ]
+        )
+        directed_df = pl.DataFrame(
+            [
+                {
+                    "left_id": left_id.label,
+                    "left_source": left_id.source,
+                    "right_id": right_id.label,
+                    "right_source": right_id.source,
+                    "label": c,
+                }
+                for (left_id, right_id), c in directed_gt.items()
+            ]
+        )
+        undirected_df = pl.DataFrame(
+            [
+                {
+                    "left_id": left_id.label,
+                    "left_source": left_id.source,
+                    "right_id": right_id.label,
+                    "right_source": right_id.source,
+                    "label": c,
+                }
+                for (left_id, right_id), c in undirected_gt.items()
+            ]
+        )
+        directed_undirected = {
+            f"amb_{data.name}": undirected_df,
+            f"amb_{data.name}_dir": directed_df,
+        }
+
+        for output_dataset_name, mapping_df in directed_undirected.items():
+            dataset_output_path = output_dir / output_dataset_name
+            dataset_output_path.mkdir(parents=True, exist_ok=True)
+            file_map = {
+                f"{output_dataset_name}_ids.csv": data_df,
+                f"{output_dataset_name}_mapping.csv": mapping_df,
+                f"{output_dataset_name}_cluster_mapping.csv": clusters_df,
             }
-            for (left_id, right_id), c in directed_gt.items()
-        ]
-    )
-    undirected_df = pl.DataFrame(
-        [
-            {
-                "left_id": left_id.label,
-                "left_source": left_id.source,
-                "right_id": right_id.label,
-                "right_source": right_id.source,
-                "label": c,
-            }
-            for (left_id, right_id), c in undirected_gt.items()
-        ]
-    )
-
-    ground_truths = {
-        f"!amb_{ds.name}_clusters": clusters_df,
-        f"!amb_{ds.name}_directed": directed_df,
-        f"!amb_{ds.name}_undirected": undirected_df,
-    }
-
-    data_df.write_csv(DIR / f"!amb_{ds.name}.csv", include_header=True)
-    for name, df in ground_truths.items():
-        df.write_csv(DIR / f"{name}_gt.csv", include_header=True)
-
-    id_cluster_map = {r: c_id for c_id, ids in cluster_gt.items() for r in ids}
-    for name, match_gt in [("directed", directed_gt), ("undirected", undirected_gt)]:
-        generator = SplitGenerator(
-            split_ratio=(3, 1, 1),
-            neg_pos_ratio=8.0,
-            match_bridge_ratio=4.0,
-            max_total_samples=10000,
-            seed=43,
-        ).load(id_table, id_cluster_map, match_gt)
-        generator.generate().save(str(DIR.absolute()), prefix=f"!amb_{ds.name}_{name}")
-
-
-if __name__ == "__main__":
-    main()
+            for name, df in file_map.items():
+                df.write_csv(dataset_output_path / name, include_header=True)

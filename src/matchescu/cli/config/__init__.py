@@ -1,4 +1,5 @@
 from ._config import (
+    AmbiguityConfig,
     EvaluationConfig,
     AnyMatcherConfig,
     DeepMatcherConfig,
@@ -15,4 +16,5 @@ __all__ = [
     "DeepMatcherConfig",
     "DittoConfig",
     "TConfig",
+    "AmbiguityConfig",
 ]

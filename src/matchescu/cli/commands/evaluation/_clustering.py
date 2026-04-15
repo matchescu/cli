@@ -9,7 +9,6 @@ from rich.progress import Progress, TaskID
 
 from matchescu.cli.config import EvaluationConfig, new_benchmark_data_factory
 from matchescu.cli.data import load_comparison_space_clusters, load_comparison_space
-from matchescu.cli.models import new_matcher
 from matchescu.cli.runtime import get_options, make_absolute_path
 from matchescu.clustering import (
     ClusteringAlgorithm,
@@ -20,7 +19,7 @@ from matchescu.clustering import (
     SpectralClustering,
 )
 from matchescu.similarity import ReferenceGraph, GmlGraphPersistence
-from matchescu.typing import EntityReference, EntityReferenceIdentifier as RefId
+from matchescu.typing import EntityReferenceIdentifier as RefId
 from pyresolvemetrics import (
     pair_precision,
     pair_recall,
@@ -58,7 +57,7 @@ CLUSTER_METRICS = [
 
 
 def _load_reference_graphs(
-    root_dir, graph_root, benchmark_data, matcher_configs, input_orders
+    graph_root, benchmark_data, matcher_configs, input_orders
 ) -> dict:
     result = {}
     for match_cfg in matcher_configs:
@@ -66,9 +65,8 @@ def _load_reference_graphs(
             gml_path = (
                 graph_root / benchmark_data.name / match_cfg.name / f"{order}-graph.gml"
             )
-            matcher = new_matcher(match_cfg, root_dir, benchmark_data.name)
             # 'load' overrides whether graph is directed or not
-            graph = ReferenceGraph(matcher).load(GmlGraphPersistence(gml_path))
+            graph = ReferenceGraph().load(GmlGraphPersistence(gml_path))
             result.setdefault(match_cfg.name, []).append((order, graph))
     return result
 
@@ -83,7 +81,7 @@ def _load_dataset_matcher_data(
     tuple[
         set[RefId],
         frozenset[frozenset[RefId]],
-        dict[str, list[tuple[str, ReferenceGraph[EntityReference]]]],
+        dict[str, list[tuple[str, ReferenceGraph]]],
     ],
 ]:
     dataset_matcher_data = {}
@@ -102,7 +100,7 @@ def _load_dataset_matcher_data(
             clusters_path, benchmark_data, cs, all_ref_ids
         )
         reference_graphs = _load_reference_graphs(
-            root_dir, graph_root, benchmark_data, cfg.matching, input_orders
+            graph_root, benchmark_data, cfg.matching, input_orders
         )
         dataset_matcher_data.setdefault(
             benchmark_data.name, (all_ref_ids, true_clusters, reference_graphs)
@@ -113,15 +111,16 @@ def _load_dataset_matcher_data(
 def _compute_metrics(
     true_clusters: frozenset[frozenset[RefId]],
     algorithm: ClusteringAlgorithm[RefId],
-    graph: ReferenceGraph[EntityReference],
+    graph: ReferenceGraph,
     progress: Progress,
     task: TaskID,
+    desc: str,
 ) -> dict:
     er_result = algorithm(graph)
     progress.advance(task)
     metrics_dict = {}
     for key, metric in CLUSTER_METRICS:
-        progress.update(task_id=task, description=f"computing {key}")
+        progress.update(task_id=task, description=f"{key} {desc}")
         metrics_dict.setdefault(key, metric(true_clusters, er_result))
         progress.advance(task)
     return metrics_dict
@@ -166,11 +165,12 @@ def main(
     cfg = eval_opts.config
     graph_root = make_absolute_path(reference_graph_dir, root_dir)
     csv_path = make_absolute_path(stats_csv_path, root_dir)
+    n_orders = len(input_orders)
     n_metrics = len(CLUSTER_METRICS) + 1  # +1 for performing clustering itself
     n_datasets = len(cfg.benchmark_data)
     n_clusterers = len(cfg.clustering.algorithms)
     n_matchers = len(cfg.matching)
-    total_steps = n_clusterers * n_datasets * n_matchers * n_metrics
+    total_steps = n_clusterers * n_datasets * n_matchers * n_metrics * n_orders
     dataset_matcher_data = _load_dataset_matcher_data(
         cfg, root_dir, graph_root, input_orders
     )
@@ -205,6 +205,7 @@ def main(
                                     graph,
                                     progress,
                                     task,
+                                    f"{algo_key}({order}) - {ds_name}/{matcher_name}",
                                 ),
                             }
                         )

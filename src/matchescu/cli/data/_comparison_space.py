@@ -56,8 +56,7 @@ def load_comparison_space(
             neg_pos_ratio=cs_config.neg_pos_ratio,
             match_bridge_ratio=cs_config.match_bridge_ratio,
             max_total_samples=cs_config.sample_count,
-            save_comparisons=True,
-            save_clusters=True,
+            save=True,
             excluded=_get_excluded(data, data_dir, cs_config),
         )
         cluster_file_path = file_path.parent / f"{file_path.stem}-clusters.csv"
