@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "cli"
-version = "0.1.3"
+version = "0.2.0"
 description = "Command-line interface to the Matchescu entity resolution system"
 authors = ["Andrei Olar <andrei.olar@ubbcluj.ro>"]
 readme = "README.md"
@@ -22,6 +22,8 @@ matchescu-reference-extraction = {path = "../reference-extraction", develop = tr
 rapidfuzz = "^3.14.3"
 matchescu-reference-store = {path = "../reference-store", develop = true}
 scikit-learn = "^1.8.0"
+matplotlib = "^3.10.8"
+seaborn = "^0.13.2"
 
 [tool.poetry.scripts]
 matchescu = "matchescu.cli:matchescu"

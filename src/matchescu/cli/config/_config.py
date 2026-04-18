@@ -26,8 +26,16 @@ class DeepMatcherConfig(ModelConfig):
     excluded_attributes: list[str | int] | None = None
 
 
+class DeepERConfig(ModelConfig):
+    type: Literal["deeper"] = "deeper"
+    tokenizer: str = "google-bert/bert-base-uncased"
+    attribute_map: dict[str, str] | None = None
+    attribute_vector_length: int = 30
+    excluded_attributes: list[str | int] | None = None
+
+
 AnyMatcherConfig = Annotated[
-    Union[DittoConfig, DeepMatcherConfig],
+    Union[DittoConfig, DeepMatcherConfig, DeepERConfig],
     Field(discriminator="type"),
 ]
 

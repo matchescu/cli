@@ -7,8 +7,10 @@ from matchescu.cli.config import (
     DittoConfig,
     AnyMatcherConfig,
 )
+from matchescu.cli.config._config import DeepERConfig
 from matchescu.matching import Matcher
 from matchescu.matching.matchers import DeepMatcherSimilarity, DittoSimilarity
+from matchescu.matching.matchers.ml.deeper import DeepERSimilarity
 from matchescu.matching.matchers.ml.multiclass import MultiClassSimilarity
 
 
@@ -16,6 +18,15 @@ def _new_deepmatcher(
     config: DeepMatcherConfig, file_path: Path
 ) -> DeepMatcherSimilarity:
     return DeepMatcherSimilarity(
+        AutoTokenizer.from_pretrained(config.tokenizer),
+        config.attribute_map,
+        config.attribute_vector_length,
+        config.excluded_attributes,
+    ).load_from_file(file_path)
+
+
+def _new_deeper(config: DeepMatcherConfig, file_path: Path) -> DeepERSimilarity:
+    return DeepERSimilarity(
         AutoTokenizer.from_pretrained(config.tokenizer),
         config.attribute_map,
         config.attribute_vector_length,
@@ -47,6 +58,7 @@ def _new_ditto(config: DittoConfig, file_path: Path) -> Matcher:
 _CONFIG_TYPE_TO_MATCHER_MAP = {
     DeepMatcherConfig: _new_deepmatcher,
     DittoConfig: _new_ditto,
+    DeepERConfig: _new_deeper,
 }
 
 
