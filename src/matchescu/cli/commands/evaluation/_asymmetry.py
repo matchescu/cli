@@ -112,7 +112,7 @@ class AsymmetryCommand(click.Command):
         n_models = len(cfg.matching)
         n_total_ops = n_models * sum(len(cs) for _, cs in data)
         self._prog.update(self._overall_prog, total=n_total_ops, completed=0)
-        df = polars.DataFrame()
+        dataframes = []
         for benchmark_data, cs in data:
             self._prog.stop_task(self._dataset_prog)
             cs_refs: list[EntityReference] = list(
@@ -127,7 +127,6 @@ class AsymmetryCommand(click.Command):
             )
             self._prog.start_task(self._dataset_prog)
 
-            df = polars.DataFrame()
             for model_config in cfg.matching:
                 self._prog.stop_task(self._model_prog)
                 self._prog.update(
@@ -146,8 +145,9 @@ class AsymmetryCommand(click.Command):
                 )
                 file_name = f"{benchmark_data.name}-{model_config.name}-asymmetry.csv"
                 matcher_df.write_csv(output_dir / file_name, include_header=True)
-                df = polars.concat([df, matcher_df], how="vertical", strict=True)
-        df.write_csv(output_dir / "results.csv", include_header=True)
+                dataframes.append(matcher_df)
+        concatenated = polars.concat(dataframes, how="vertical", strict=True)
+        concatenated.write_csv(output_dir / "all.csv", include_header=True)
 
 
 # Register the command with the evaluate group

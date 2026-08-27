@@ -1,5 +1,4 @@
 import re
-
 from difflib import SequenceMatcher
 from itertools import combinations, permutations
 from os import PathLike
@@ -7,14 +6,20 @@ from pathlib import Path
 from typing import Set
 
 import click
-import networkx as nx
+import numpy as np
 import polars as pl
+import matplotlib.pyplot as plt
+import seaborn as sns
 from click import Context
 from rich.progress import Progress
+from sklearn.mixture import GaussianMixture
+from scipy.optimize import brentq
+from scipy.stats import norm
 
 from matchescu.cli._cmd_group import matchescu
 from matchescu.cli.config import JSONConfig, AmbiguityConfig, new_benchmark_data_factory
 from matchescu.cli.runtime import get_options, make_absolute_path
+from matchescu.matching.evaluation.data.benchmark import CsvBenchmarkData
 from matchescu.reference_store.id_table import IdTable
 from matchescu.typing import (
     EntityReferenceIdentifier as RefId,
@@ -31,19 +36,7 @@ except ImportError:
 
 
 DIR = Path("./data/affiliationstrings/")
-DEFAULT_BRIDGE_TERMS: list[str] = [
-    "Research",
-    "Center",
-    "Lab",
-    "Institute",
-    "College",
-    "Department",
-    "Division",
-    "Group",
-    "School",
-    "Foundation",
-]
-
+TOP_N_BRIDGE_TERMS: int = 10
 
 type ComparisonData = tuple[RefId, RefId]
 
@@ -73,13 +66,18 @@ class AmbiguityGenerator:
         self,
         id_table: IdTable,
         mapping_gt: dict[ComparisonData, int],
+        clusters: frozenset[frozenset[RefId]],
         ambiguity_target_properties: list[str] = None,
         string_degradation_patterns: list[str] = None,
         min_ambiguity: float | None = None,
     ) -> None:
         self._mapping_gt = mapping_gt
         self._id_table = id_table
-        self._cluster_id_map, self._cluster_count = self.__get_clusters()
+        self._cluster_count = len(clusters)
+        self._cluster_id_map = {
+            cluster_idx: set(x for x in cluster)
+            for cluster_idx, cluster in enumerate(clusters, start=1)
+        }
         self._degradation_patterns = (
             string_degradation_patterns or self._DEFAULT_DEGRADATION_PATTERNS
         )
@@ -90,20 +88,57 @@ class AmbiguityGenerator:
             description="create ambiguous data", total=n_total_steps
         )
         self._min_ambiguity = min_ambiguity
+        self._bridge_terms = self._build_bridge_terms()
 
-    def __get_clusters(self):
-        ref_ids = list(self._mapping_gt)
-        g = nx.DiGraph(ref_ids)
-        cluster_count = 0
-        cluster_ref_map = {}
+    def _build_bridge_terms(self) -> list[str]:
+        """Build dataset-specific bridge terms using TF/IDF on the id table.
 
-        for cluster_count, cluster in enumerate(nx.strongly_connected_components(g), 1):
-            if cluster_count not in cluster_ref_map:
-                cluster_ref_map[cluster_count] = set()
-            for ref_id in cluster:
-                cluster_ref_map[cluster_count].add(ref_id)
+        Steps:
+        1. Tokenise every string field value; skip stopwords.
+        2. Count term frequency (TF) per document and document frequency (DF).
+        3. Rank by TF-IDF ratio; return the top TOP_N_BRIDGE_TERMS terms.
+        """
+        try:
+            from stopwords import get_stopwords
+            stop = set(w.lower() for w in get_stopwords("en"))
+        except Exception:
+            stop = set()
 
-        return cluster_ref_map, cluster_count
+        token_re = re.compile(r"\b\w{2,}\b")
+
+        # tf[doc_id][term] = count; df[term] = number of docs containing term
+        tf: dict[str, dict[str, int]] = {}
+        df: dict[str, int] = {}
+
+        for ref in self._id_table:
+            doc_id = f"{ref.id.label}-{ref.id.source}"
+            doc_tf: dict[str, int] = {}
+            for val in ref.as_dict().values():
+                if not isinstance(val, str):
+                    continue
+                for tok in token_re.findall(val):
+                    tok_l = tok.lower()
+                    if tok_l in stop:
+                        continue
+                    doc_tf[tok_l] = doc_tf.get(tok_l, 0) + 1
+            if not doc_tf:
+                continue
+            tf[doc_id] = doc_tf
+            for term in doc_tf:
+                df[term] = df.get(term, 0) + 1
+
+        if not tf or not df:
+            return []
+
+        n_docs = len(tf)
+        # Score = (total TF across corpus) / DF  — rewards common-but-not-ubiquitous terms
+        scores: dict[str, float] = {}
+        for doc_tf in tf.values():
+            for term, count in doc_tf.items():
+                scores[term] = scores.get(term, 0.0) + count / df[term]
+
+        ranked = sorted(scores, key=lambda t: scores[t], reverse=True)
+        return [t for t in ranked[:TOP_N_BRIDGE_TERMS]]
 
     def degrade_str(self, input_str):
         result = input_str
@@ -177,7 +212,7 @@ class AmbiguityGenerator:
         - 2.0 * inv(edit distance) if property values are not identical
         - property is not a string gets -0.5
         - type mismatch gets -1.0
-        - property does not exist in ``x`` or ``y`` other gets -2.0
+        - property does not exist in ``x`` or ``y`` other gets -0.5
 
         :param x: first entity reference
         :param y: second entity reference
@@ -443,13 +478,34 @@ class AmbiguityGenerator:
         n: int = 5,
         bridge_terms: list[str] | None = None,
     ) -> list[tuple[str, ...]]:
-        bt = bridge_terms if bridge_terms is not None else DEFAULT_BRIDGE_TERMS
+        val_words = list(dict.fromkeys(
+            w for w in (val_a.split() + val_b.split()) if len(w) > 2
+        ))
+        bt = list(bridge_terms) if bridge_terms is not None else []
+        bt = list(dict.fromkeys(bt + val_words))
+
         pool = cls._candidates(val_a, val_b, bt)
         ranked = sorted(
             ((c, *cls._score(c, val_a, val_b)) for c in pool),
             key=lambda r: r[1],
             reverse=True,
         )
+
+        if len(ranked) < n:
+            seen = {r[0] for r in ranked}
+            fallbacks = [
+                (tok, 0.0, 0.0, 0.0)
+                for tok in val_words
+                if tok not in seen and tok.lower() not in (val_a.lower(), val_b.lower())
+            ]
+            # If still not enough, use val_a and val_b themselves as a last resort.
+            if not fallbacks:
+                for fallback_str in (val_a, val_b):
+                    if fallback_str not in seen:
+                        fallbacks.append((fallback_str, 0.0, 0.0, 0.0))
+                        seen.add(fallback_str)
+            ranked = ranked + fallbacks[: n - len(ranked)]
+
         return ranked[:n]
 
     def _generate_ambiguous_references(self, cluster_reps, closest_correspondents):
@@ -486,9 +542,10 @@ class AmbiguityGenerator:
                     if k not in self._target_properties:
                         ref_properties[k] = ""
                     else:
-                        ref_properties[k] = self._generate_ambiguous_text(
-                            val_a, val_b, 1
-                        )[0][0]
+                        results = self._generate_ambiguous_text(
+                            val_a, val_b, 1, self._bridge_terms
+                        )
+                        ref_properties[k] = results[0][0] if results else val_a
                 else:
                     ref_properties[k] = None
             new_ref = EntityReference(
@@ -499,6 +556,15 @@ class AmbiguityGenerator:
             max_id += 1
             self._progress.advance(self._main_task)
         return ambiguous_refs
+
+    def best_pairing_scores(self) -> list[float]:
+        """Best ambiguity score per cluster, independent of the threshold."""
+        cluster_reps = self._get_cluster_representatives()
+        saved = self._min_ambiguity
+        self._min_ambiguity = None  # disable filtering: keep every pairing
+        pairings = self._find_closest_rep(cluster_reps)
+        self._min_ambiguity = saved
+        return [score for _, score, _ in pairings.values()]
 
     def __call__(self) -> tuple[
         IdTable,
@@ -532,6 +598,227 @@ class AmbiguityGenerator:
         return self._id_table, cluster_gt, directed_gt, undirected_gt
 
 
+def _compute_drops(bridge_counts: list[float]) -> list[tuple[int, int, float]]:
+    """Return (prev_idx, curr_idx, drop_magnitude) for every consecutive fall."""
+    return [
+        (i - 1, i, bridge_counts[i - 1] - bridge_counts[i])
+        for i in range(1, len(bridge_counts))
+        if bridge_counts[i] < bridge_counts[i - 1]
+    ]
+
+
+def _find_gmm_highlight(df: pl.DataFrame) -> dict[str, dict]:
+    """Read the pre-computed GMM threshold from the DataFrame."""
+    gmm_theta   = float(df["gmm_threshold"][0])
+    thresholds  = df["threshold"].to_list()
+    counts      = df["bridge_count"].to_list()
+
+    # Find the bridge count at the threshold closest to gmm_theta.
+    closest_idx = int(np.argmin([abs(t - gmm_theta) for t in thresholds]))
+
+    return {
+        "gmm": {
+            "threshold":    gmm_theta,
+            "bridge_count": counts[closest_idx],
+            "extra":        None,
+        }
+    }
+
+
+def _plot_dataset_line(ax: plt.Axes, df: pl.DataFrame, color: str, label: str) -> None:
+    thresholds = df["threshold"].to_list()
+    counts = df["bridge_count"].to_list()
+
+    ax.plot(thresholds, counts, color=color, linewidth=2, alpha=0.5, label=label)
+
+
+_HIGHLIGHT_STYLES: dict[str, dict] = {
+    "gmm": {"marker": "D", "label": "GMM threshold"},
+}
+
+
+def _build_highlight_legend(ax: plt.Axes) -> None:
+    """Append criterion-shape entries to the existing legend."""
+    shape_handles = [
+        plt.Line2D(
+            [0], [0],
+            marker=style["marker"],
+            color="grey",
+            linestyle="None",
+            markersize=7,
+            label=style["label"],
+        )
+        for style in _HIGHLIGHT_STYLES.values()
+    ]
+    existing_handles, existing_labels = ax.get_legend_handles_labels()
+    ax.legend(
+        handles=existing_handles + shape_handles,
+        labels=existing_labels + [s["label"] for s in _HIGHLIGHT_STYLES.values()],
+        title="Dataset / threshold",
+        frameon=True,
+        fontsize=9,
+    )
+
+
+def _plot_threshold_highlights(
+    ax: plt.Axes,
+    highlights: dict[str, dict],
+    color: str,
+    y_max: float,
+    dataset_idx: int,
+) -> None:
+    """Draw vertical lines, axis markers, and threshold+bridge-count labels."""
+    for criterion_idx, (criterion, style) in enumerate(_HIGHLIGHT_STYLES.items()):
+        info = highlights[criterion]
+        x = float(info["threshold"])
+
+        ax.axvline(x=x, color=color, linestyle="--", linewidth=0.8, alpha=0.6)
+
+        # Separate markers vertically: one row per criterion.
+        marker_y = -(0.06 + criterion_idx * 0.05) * y_max
+        ax.plot(
+            x,
+            marker_y,
+            marker=style["marker"],
+            color=color,
+            markersize=7,
+            clip_on=False,
+            zorder=5,
+        )
+
+        label_parts = [f"θ={x:.2f}", f"b={info['bridge_count']}"]
+        if info["extra"]:
+            label_parts.append(f"({info['extra']})")
+        label = "\n".join(label_parts)
+
+        # Stack by both dataset and criterion to avoid any overlap.
+        n_criteria = len(_HIGHLIGHT_STYLES)
+        label_y = -(0.09 + (dataset_idx * n_criteria + criterion_idx) * 0.07) * y_max
+        ax.annotate(
+            label,
+            xy=(x, 0),
+            xytext=(x, label_y),
+            color=color,
+            fontsize=7,
+            ha="center",
+            va="top",
+            clip_on=False,
+            annotation_clip=False,
+        )
+
+
+def _render_threshold_plot(all_frames: list[pl.DataFrame]) -> None:
+    """Render one threshold-vs-bridge-count figure for all datasets."""
+    sns.set_theme(style="white", font_scale=1.1)
+    palette = sns.color_palette("tab10", n_colors=len(all_frames))
+
+    fig, ax = plt.subplots(figsize=(10, 5))
+
+    y_max = max(df["bridge_count"].max() for df in all_frames)
+
+    for idx, (df, color) in enumerate(zip(all_frames, palette)):
+        dataset_name = df["dataset"][0]
+        _plot_dataset_line(ax, df, color, label=dataset_name)
+        highlights = _find_gmm_highlight(df)
+        _plot_threshold_highlights(ax, highlights, color, y_max, dataset_idx=idx)
+
+    # Extra bottom margin scales with number of datasets × number of criteria
+    n_criteria = len(_HIGHLIGHT_STYLES)
+    bottom_margin = 0.10 + len(all_frames) * n_criteria * 0.07
+    ax.set_ylim(bottom=-bottom_margin * y_max)
+
+    ax.set_xlabel("Threshold (θ)")
+    ax.set_ylabel("Bridge count")
+
+    _build_highlight_legend(ax)
+    sns.despine()
+    plt.tight_layout()
+    plt.savefig("threshold_analysis.png", dpi=150)
+    plt.show()
+
+
+def _gmm_threshold(scores: list[float]) -> float:
+    """
+    Fit a two-component Gaussian Mixture Model to ``scores`` and return the
+    threshold at which the posterior probability of belonging to the
+    high-score component equals 0.5.
+
+    This is the score value where the weighted density of the high-score
+    Gaussian equals the weighted density of the low-score Gaussian, i.e. the
+    decision boundary under a Bayes-optimal classifier between the two
+    components.
+
+    Returns the midpoint of the two component means as a fallback if the
+    root-finding step fails (e.g. when the two components are not separable).
+    """
+    X = np.array(scores).reshape(-1, 1)
+
+    gmm = GaussianMixture(n_components=2, covariance_type="full", random_state=0)
+    gmm.fit(X)
+
+    # Identify which component has the higher mean (the "substantive" one).
+    means = gmm.means_.flatten()
+    high_idx = int(np.argmax(means))
+    low_idx = 1 - high_idx
+
+    w_high = gmm.weights_[high_idx]
+    mu_high, sigma_high = means[high_idx], np.sqrt(gmm.covariances_[high_idx, 0, 0])
+
+    w_low = gmm.weights_[low_idx]
+    mu_low, sigma_low = means[low_idx], np.sqrt(gmm.covariances_[low_idx, 0, 0])
+
+    def posterior_diff(x):
+        """P(high | x) - 0.5, i.e. zero when the two components are equally likely."""
+        p_high = w_high * norm.pdf(x, mu_high, sigma_high)
+        p_low  = w_low  * norm.pdf(x, mu_low,  sigma_low)
+        total  = p_high + p_low
+        if total == 0:
+            return -0.5
+        return (p_high / total) - 0.5
+
+    # The crossing point lies between the two means.
+    lo, hi = min(mu_low, mu_high), max(mu_low, mu_high)
+    try:
+        threshold = brentq(posterior_diff, lo, hi)
+    except ValueError:
+        # No sign change found — components overlap heavily; use midpoint.
+        threshold = (mu_low + mu_high) / 2.0
+
+    return round(threshold)
+
+
+def _analyse_optimum_threshold(
+    analysis_start_value: float,
+    analysis_step_count: float,
+    analysis_step_size: float,
+    data: CsvBenchmarkData,
+    introduce_ambiguity: AmbiguityGenerator,
+):
+    scores = introduce_ambiguity.best_pairing_scores()
+    threshold_range = np.arange(
+        analysis_start_value,
+        analysis_step_size * (analysis_step_count + 1),
+        analysis_step_size,
+    )
+    gmm_theta = _gmm_threshold(scores)
+
+    return pl.DataFrame(data=[
+        {
+            "dataset": {
+                "affiliationstrings": "affiliations",
+                "cora1": "cora",
+                "fodors_zagat_nophone": "fodors-zagat-nophone",
+                "geographicalSettelments": "geographical-settlements",
+            }.get(data.name, data.name),
+            "threshold": theta,
+            "bridge_count": sum(1 for s in scores if s >= theta),
+            "cluster_count": len(data.compute_clusters()),
+            "cs_size": data.comparison_space_size,
+            "gmm_threshold": gmm_theta,
+        }
+        for theta in threshold_range
+    ])
+
 @matchescu.command("ambiguity-generator")
 @click.option(
     "-c",
@@ -551,8 +838,49 @@ class AmbiguityGenerator:
     ),
     help="root directory where ambiguous datasets corresponding to the configured input datasets are generated",
 )
+@click.option(
+    "--analyse-best-threshold",
+    "is_analysis_mode",
+    type=click.BOOL,
+    default=False,
+    required=False,
+    is_flag=True,
+    help="Run one-factor-at-a-time analysis for the best ambiguity threshold",
+)
+@click.option(
+    "--threshold-analysis-step-count",
+    "analysis_step_count",
+    type=click.FLOAT,
+    default=10.0,
+    required=False,
+    help="How many thresholds to analyse using one-factor-at-a-time",
+)
+@click.option(
+    "--threshold-analysis-step-size",
+    "analysis_step_size",
+    type=click.FLOAT,
+    default=1.0,
+    required=False,
+    help="How large should the difference between consecutive thresholds be for one-factor-at-a-time analysis",
+)
+@click.option(
+    "--threshold-analysis-start-value",
+    "analysis_start_value",
+    type=click.FLOAT,
+    default=0.0,
+    required=False,
+    help="How large should the difference between consecutive thresholds be for one-factor-at-a-time analysis",
+)
 @click.pass_context
-def main(ctx: Context, config_file: str | PathLike, output_dir: str | PathLike):
+def main(
+    ctx: Context,
+    config_file: str | PathLike,
+    output_dir: str | PathLike,
+    is_analysis_mode: bool,
+    analysis_step_count: float,
+    analysis_step_size: float,
+    analysis_start_value: float,
+):
     """Introduce ambiguous data into existing dataset."""
     root_dir = get_options(ctx).root_dir
     config: AmbiguityConfig = (
@@ -562,6 +890,7 @@ def main(ctx: Context, config_file: str | PathLike, output_dir: str | PathLike):
     )
     output_dir = make_absolute_path(output_dir, root_dir)
 
+    analysis_frames: list[pl.DataFrame] = []
     for ds_idx, input_cfg in enumerate(config.input_data):
         print("processing", input_cfg.dataset.directory)
         builder = new_benchmark_data_factory(input_cfg.dataset, root_dir)
@@ -569,9 +898,21 @@ def main(ctx: Context, config_file: str | PathLike, output_dir: str | PathLike):
         introduce_ambiguity = AmbiguityGenerator(
             data.id_table,
             data.true_matches,
+            data.compute_clusters(),
             input_cfg.ambiguity_targets,
             min_ambiguity=input_cfg.min_ambiguity,
         )
+        if is_analysis_mode:
+            analysis_frames.append(
+                _analyse_optimum_threshold(
+                    analysis_start_value,
+                    analysis_step_count,
+                    analysis_step_size,
+                    data,
+                    introduce_ambiguity,
+                )
+            )
+            continue
         id_table, cluster_gt, directed_gt, undirected_gt = introduce_ambiguity()
         table_ = [
             {
@@ -632,3 +973,6 @@ def main(ctx: Context, config_file: str | PathLike, output_dir: str | PathLike):
             }
             for name, df in file_map.items():
                 df.write_csv(dataset_output_path / name, include_header=True)
+
+    if analysis_frames:
+        _render_threshold_plot(analysis_frames)

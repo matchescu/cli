@@ -18,6 +18,19 @@ from ._cmd_group import evaluate, EvalOptions
 from ._input_order import InputOrder, validate_input_order_option
 
 
+RESULT_SCHEMA_OVERRIDES = {
+    "dataset": pl.String,
+    "model": pl.String,
+    "left_id": pl.Int32,
+    "right_id": pl.Int32,
+    "left_source": pl.String,
+    "right_source": pl.String,
+    "true_label": pl.Int32,
+    "normal": pl.Int32,
+    "reverse": pl.Int32,
+}
+
+
 def _compute_binary_classifier_metrics(
     true_matches: set, graph: ReferenceGraph, input_order: str
 ) -> dict:
@@ -46,23 +59,33 @@ def _compute_multiclass_metrics(cs_true_matches, g, order):
     return {"input_order": order, "mcc": matthews_corrcoef(y_true, y_pred)}
 
 
+def _put_record_attr(record: dict, attr: str, value: object) -> dict:
+    r = record or {}
+    r[attr] = value
+    return r
+
+
 def _add_normal(
-    g: ReferenceGraph, matcher: Matcher, x: EntityReference, y: EntityReference
-):
-    g.add(matcher(x, y))
+    g: ReferenceGraph, matcher: Matcher, x: EntityReference, y: EntityReference, record: dict = None
+) -> dict:
+    match_result = matcher(x, y)
+    g.add(match_result)
+    return _put_record_attr(record, "normal", match_result.label)
 
 
 def _add_reverse(
-    g: ReferenceGraph, matcher: Matcher, x: EntityReference, y: EntityReference
-):
-    g.add(matcher(y, x))
+    g: ReferenceGraph, matcher: Matcher, x: EntityReference, y: EntityReference, record: dict = None
+) -> dict:
+    match_result = matcher(y, x)
+    g.add(match_result)
+    return _put_record_attr(record, "reverse", match_result.label)
 
 
 def _add_both(
-    g: ReferenceGraph, matcher: Matcher, x: EntityReference, y: EntityReference
-):
-    g.add(matcher(x, y))
-    g.add(matcher(y, x))
+    g: ReferenceGraph, matcher: Matcher, x: EntityReference, y: EntityReference, record: dict = None
+) -> dict:
+    record = _add_normal(g, matcher, x, y, record)
+    return _add_reverse(g, matcher, x, y, record)
 
 
 @evaluate.command("matching")
@@ -132,16 +155,33 @@ def main(
                 graphs = {
                     order: ReferenceGraph(directed=True) for order in input_orders
                 }
+                model_results = {
+                    order: [] for order in input_orders
+                }
                 for x, y in cs_refs:
+                    r = {
+                        "dataset": benchmark_data.name,
+                        "model": model_config.name,
+                        "left_id": x.id.label,
+                        "left_source": x.id.source,
+                        "right_id": y.id.label,
+                        "right_source": y.id.source,
+                        "true_label": benchmark_data.true_matches.get((x.id, y.id), 0)
+                    }
                     for order, g in graphs.items():
                         add_to_graph = input_order_map[InputOrder(order)]
-                        add_to_graph(g, matcher, x, y)
+                        model_results[order].append(add_to_graph(g, matcher, x, y, r))
                     progress.update(model_task, advance=1)
                     progress.update(ds_task, advance=1)
                 graph_dir = output_path / benchmark_data.name / model_config.name
                 graph_dir.mkdir(parents=True, exist_ok=True)
                 for order, g in graphs.items():
                     g.save(GmlGraphPersistence(graph_dir / f"{order}-graph.gml"))
+
+                    df = pl.DataFrame(data=model_results[order], schema_overrides=RESULT_SCHEMA_OVERRIDES).fill_nan(-1).fill_null(-1)
+                    results_csv_path = graph_dir / f"{order}-result.csv"
+                    df.write_csv(results_csv_path, include_header=True)
+
                     if model_config.type != "multiclass":
                         true_matches = set(
                             cmp for cmp, label in cs_pair_gt.items() if label > 0
