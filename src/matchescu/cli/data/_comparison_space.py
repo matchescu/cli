@@ -1,7 +1,6 @@
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
 
-from matchescu.cli.config._config import ComparisonSpaceConfig
 from matchescu.comparison_space.persistence import CsvPersistence
 from matchescu.matching.evaluation.data.benchmark import BenchmarkData
 from matchescu.matching.evaluation.data.generation import (
@@ -9,6 +8,8 @@ from matchescu.matching.evaluation.data.generation import (
 )
 from matchescu.reference_store.comparison_space import BinaryComparisonSpace
 from matchescu.typing import EntityReferenceIdentifier as RefId
+
+from matchescu.cli.config._config import ComparisonSpaceConfig
 
 
 def _get_excluded(

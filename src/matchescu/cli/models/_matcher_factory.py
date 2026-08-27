@@ -1,17 +1,17 @@
 from pathlib import Path
 
-from transformers import AutoTokenizer
-
-from matchescu.cli.config import (
-    DeepMatcherConfig,
-    DittoConfig,
-    AnyMatcherConfig,
-)
-from matchescu.cli.config._config import DeepERConfig
 from matchescu.matching import Matcher
 from matchescu.matching.matchers import DeepMatcherSimilarity, DittoSimilarity
 from matchescu.matching.matchers.ml.deeper import DeepERSimilarity
 from matchescu.matching.matchers.ml.multiclass import MultiClassSimilarity
+from transformers import AutoTokenizer
+
+from matchescu.cli.config import (
+    AnyMatcherConfig,
+    DeepMatcherConfig,
+    DittoConfig,
+)
+from matchescu.cli.config._config import DeepERConfig
 
 
 def _new_deepmatcher(

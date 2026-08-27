@@ -5,33 +5,33 @@ from typing import cast
 
 import click
 import polars as pl
+from matchescu.clustering import (
+    ClusteringAlgorithm,
+    LeidenPartitioning,
+    MarkovClustering,
+    ParentCenterClustering,
+    SpectralClustering,
+    WeaklyConnectedComponents,
+)
+from matchescu.similarity import GmlGraphPersistence, ReferenceGraph
+from matchescu.typing import EntityReferenceIdentifier as RefId
+from pyresolvemetrics import (
+    adjusted_rand_index,
+    cluster_comparison_measure,
+    cluster_precision,
+    cluster_recall,
+    pair_comparison_measure,
+    pair_precision,
+    pair_recall,
+    twi,
+)
 from rich.progress import Progress, TaskID
 
 from matchescu.cli.config import EvaluationConfig, new_benchmark_data_factory
-from matchescu.cli.data import load_comparison_space_clusters, load_comparison_space
+from matchescu.cli.data import load_comparison_space, load_comparison_space_clusters
 from matchescu.cli.runtime import get_options, make_absolute_path
-from matchescu.clustering import (
-    ClusteringAlgorithm,
-    WeaklyConnectedComponents,
-    MarkovClustering,
-    ParentCenterClustering,
-    LeidenPartitioning,
-    SpectralClustering,
-)
-from matchescu.similarity import ReferenceGraph, GmlGraphPersistence
-from matchescu.typing import EntityReferenceIdentifier as RefId
-from pyresolvemetrics import (
-    pair_precision,
-    pair_recall,
-    pair_comparison_measure,
-    cluster_precision,
-    cluster_recall,
-    cluster_comparison_measure,
-    adjusted_rand_index,
-    twi,
-)
 
-from ._cmd_group import evaluate, EvalOptions
+from ._cmd_group import EvalOptions, evaluate
 from ._input_order import InputOrder, validate_input_order_option
 
 CLUSTERING_ALGOS: dict[str, ClusteringAlgorithm[RefId]] = {
@@ -90,7 +90,7 @@ def _load_dataset_matcher_data(
         builder = new_benchmark_data_factory(ds_config.dataset, root_dir)
         benchmark_data = builder.load_data().create()
         cs = load_comparison_space(benchmark_data, ds_dir, ds_config.comparison_space)
-        all_ref_ids = set(x for cmp in cs for x in cmp)
+        all_ref_ids = {x for cmp in cs for x in cmp}
         cs_path = ds_dir / ds_config.comparison_space.file_name
 
         clusters_path = ds_dir / (

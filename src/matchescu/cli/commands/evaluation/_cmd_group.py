@@ -1,11 +1,11 @@
 import os
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
 from typing import Generic
 
 import click
 
 from matchescu.cli._cmd_group import matchescu
-from matchescu.cli.config import TConfig, JSONConfig, EvaluationConfig
+from matchescu.cli.config import EvaluationConfig, JSONConfig, TConfig
 from matchescu.cli.runtime import CommonCliOptions, get_options, make_absolute_path
 
 

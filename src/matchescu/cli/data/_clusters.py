@@ -1,16 +1,15 @@
 import os
-from os import PathLike
 from logging import getLogger
+from os import PathLike
 from pathlib import Path
 
 import polars as pl
-
 from matchescu.matching.evaluation.data.benchmark import BenchmarkData
 from matchescu.matching.evaluation.ground_truth import read_clusters_csv
 from matchescu.reference_store.comparison_space import BinaryComparisonSpace
 from matchescu.typing import EntityReferenceIdentifier as RefId
 
-_log = getLogger(__file__)
+_log = getLogger(__name__)
 
 
 def load_comparison_space_clusters(
@@ -39,9 +38,7 @@ def load_comparison_space_clusters(
             source_col=1,
             label_col=2,
         )
-        clustered_refs = set(
-            ref_id for cluster in clusters.values() for ref_id in cluster
-        )
+        clustered_refs = {ref_id for cluster in clusters.values() for ref_id in cluster}
         max_id = max(clusters.keys())
     else:
         df = downscale_clusters(data, cs, path)

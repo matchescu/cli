@@ -3,28 +3,30 @@ from difflib import SequenceMatcher
 from itertools import combinations, permutations
 from os import PathLike
 from pathlib import Path
-from typing import Set
+from typing import ClassVar
 
 import click
+import matplotlib.pyplot as plt
 import numpy as np
 import polars as pl
-import matplotlib.pyplot as plt
 import seaborn as sns
 from click import Context
-from rich.progress import Progress
-from sklearn.mixture import GaussianMixture
-from scipy.optimize import brentq
-from scipy.stats import norm
-
-from matchescu.cli._cmd_group import matchescu
-from matchescu.cli.config import JSONConfig, AmbiguityConfig, new_benchmark_data_factory
-from matchescu.cli.runtime import get_options, make_absolute_path
 from matchescu.matching.evaluation.data.benchmark import CsvBenchmarkData
 from matchescu.reference_store.id_table import IdTable
 from matchescu.typing import (
-    EntityReferenceIdentifier as RefId,
     EntityReference,
 )
+from matchescu.typing import (
+    EntityReferenceIdentifier as RefId,
+)
+from rich.progress import Progress
+from scipy.optimize import brentq
+from scipy.stats import norm
+from sklearn.mixture import GaussianMixture
+
+from matchescu.cli._cmd_group import matchescu
+from matchescu.cli.config import AmbiguityConfig, JSONConfig, new_benchmark_data_factory
+from matchescu.cli.runtime import get_options, make_absolute_path
 
 try:
     from rapidfuzz.distance import Levenshtein
@@ -42,7 +44,7 @@ type ComparisonData = tuple[RefId, RefId]
 
 
 class AmbiguityGenerator:
-    _DEFAULT_DEGRADATION_PATTERNS = [
+    _DEFAULT_DEGRADATION_PATTERNS: ClassVar[list[str]] = [
         r",\s*USA",
         r",\s*US",
         r",\s*United States",
@@ -67,15 +69,15 @@ class AmbiguityGenerator:
         id_table: IdTable,
         mapping_gt: dict[ComparisonData, int],
         clusters: frozenset[frozenset[RefId]],
-        ambiguity_target_properties: list[str] = None,
-        string_degradation_patterns: list[str] = None,
+        ambiguity_target_properties: list[str] | None = None,
+        string_degradation_patterns: list[str] | None = None,
         min_ambiguity: float | None = None,
     ) -> None:
         self._mapping_gt = mapping_gt
         self._id_table = id_table
         self._cluster_count = len(clusters)
         self._cluster_id_map = {
-            cluster_idx: set(x for x in cluster)
+            cluster_idx: set(cluster)
             for cluster_idx, cluster in enumerate(clusters, start=1)
         }
         self._degradation_patterns = (
@@ -100,8 +102,9 @@ class AmbiguityGenerator:
         """
         try:
             from stopwords import get_stopwords
-            stop = set(w.lower() for w in get_stopwords("en"))
-        except Exception:
+
+            stop = {w.lower() for w in get_stopwords("en")}
+        except Exception:  # noqa: BLE001
             stop = set()
 
         token_re = re.compile(r"\b\w{2,}\b")
@@ -130,7 +133,7 @@ class AmbiguityGenerator:
         if not tf or not df:
             return []
 
-        n_docs = len(tf)
+        len(tf)
         # Score = (total TF across corpus) / DF  — rewards common-but-not-ubiquitous terms
         scores: dict[str, float] = {}
         for doc_tf in tf.values():
@@ -478,9 +481,9 @@ class AmbiguityGenerator:
         n: int = 5,
         bridge_terms: list[str] | None = None,
     ) -> list[tuple[str, ...]]:
-        val_words = list(dict.fromkeys(
-            w for w in (val_a.split() + val_b.split()) if len(w) > 2
-        ))
+        val_words = list(
+            dict.fromkeys(w for w in (val_a.split() + val_b.split()) if len(w) > 2)
+        )
         bt = list(bridge_terms) if bridge_terms is not None else []
         bt = list(dict.fromkeys(bt + val_words))
 
@@ -509,7 +512,7 @@ class AmbiguityGenerator:
         return ranked[:n]
 
     def _generate_ambiguous_references(self, cluster_reps, closest_correspondents):
-        max_id = max(map(lambda r: r.id.label, self._id_table))
+        max_id = max(r.id.label for r in self._id_table)
         start_refs = {k: self._id_table.get(v) for k, v in cluster_reps.items()}
 
         ambiguous_refs = {}
@@ -521,7 +524,7 @@ class AmbiguityGenerator:
             if cluster_id not in closest_correspondents:
                 self._progress.advance(self._main_task)
                 continue
-            target_cluster_id, score, target = closest_correspondents[cluster_id]
+            target_cluster_id, _score, target = closest_correspondents[cluster_id]
             source_dict = start_ref.as_dict()
             target_dict = target.as_dict()
             all_keys = set(source_dict.keys()) | set(target_dict.keys())
@@ -568,7 +571,7 @@ class AmbiguityGenerator:
 
     def __call__(self) -> tuple[
         IdTable,
-        dict[int, Set[RefId]],
+        dict[int, set[RefId]],
         dict[tuple[RefId, RefId], int],
         dict[tuple[RefId, RefId], int],
     ]:
@@ -609,18 +612,18 @@ def _compute_drops(bridge_counts: list[float]) -> list[tuple[int, int, float]]:
 
 def _find_gmm_highlight(df: pl.DataFrame) -> dict[str, dict]:
     """Read the pre-computed GMM threshold from the DataFrame."""
-    gmm_theta   = float(df["gmm_threshold"][0])
-    thresholds  = df["threshold"].to_list()
-    counts      = df["bridge_count"].to_list()
+    gmm_theta = float(df["gmm_threshold"][0])
+    thresholds = df["threshold"].to_list()
+    counts = df["bridge_count"].to_list()
 
     # Find the bridge count at the threshold closest to gmm_theta.
     closest_idx = int(np.argmin([abs(t - gmm_theta) for t in thresholds]))
 
     return {
         "gmm": {
-            "threshold":    gmm_theta,
+            "threshold": gmm_theta,
             "bridge_count": counts[closest_idx],
-            "extra":        None,
+            "extra": None,
         }
     }
 
@@ -641,7 +644,8 @@ def _build_highlight_legend(ax: plt.Axes) -> None:
     """Append criterion-shape entries to the existing legend."""
     shape_handles = [
         plt.Line2D(
-            [0], [0],
+            [0],
+            [0],
             marker=style["marker"],
             color="grey",
             linestyle="None",
@@ -712,7 +716,7 @@ def _render_threshold_plot(all_frames: list[pl.DataFrame]) -> None:
     sns.set_theme(style="white", font_scale=1.1)
     palette = sns.color_palette("tab10", n_colors=len(all_frames))
 
-    fig, ax = plt.subplots(figsize=(10, 5))
+    _fig, ax = plt.subplots(figsize=(10, 5))
 
     y_max = max(df["bridge_count"].max() for df in all_frames)
 
@@ -770,8 +774,8 @@ def _gmm_threshold(scores: list[float]) -> float:
     def posterior_diff(x):
         """P(high | x) - 0.5, i.e. zero when the two components are equally likely."""
         p_high = w_high * norm.pdf(x, mu_high, sigma_high)
-        p_low  = w_low  * norm.pdf(x, mu_low,  sigma_low)
-        total  = p_high + p_low
+        p_low = w_low * norm.pdf(x, mu_low, sigma_low)
+        total = p_high + p_low
         if total == 0:
             return -0.5
         return (p_high / total) - 0.5
@@ -802,22 +806,25 @@ def _analyse_optimum_threshold(
     )
     gmm_theta = _gmm_threshold(scores)
 
-    return pl.DataFrame(data=[
-        {
-            "dataset": {
-                "affiliationstrings": "affiliations",
-                "cora1": "cora",
-                "fodors_zagat_nophone": "fodors-zagat-nophone",
-                "geographicalSettelments": "geographical-settlements",
-            }.get(data.name, data.name),
-            "threshold": theta,
-            "bridge_count": sum(1 for s in scores if s >= theta),
-            "cluster_count": len(data.compute_clusters()),
-            "cs_size": data.comparison_space_size,
-            "gmm_threshold": gmm_theta,
-        }
-        for theta in threshold_range
-    ])
+    return pl.DataFrame(
+        data=[
+            {
+                "dataset": {
+                    "affiliationstrings": "affiliations",
+                    "cora1": "cora",
+                    "fodors_zagat_nophone": "fodors-zagat-nophone",
+                    "geographicalSettelments": "geographical-settlements",
+                }.get(data.name, data.name),
+                "threshold": theta,
+                "bridge_count": sum(1 for s in scores if s >= theta),
+                "cluster_count": len(data.compute_clusters()),
+                "cs_size": data.comparison_space_size,
+                "gmm_threshold": gmm_theta,
+            }
+            for theta in threshold_range
+        ]
+    )
+
 
 @matchescu.command("ambiguity-generator")
 @click.option(

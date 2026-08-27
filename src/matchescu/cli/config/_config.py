@@ -1,9 +1,8 @@
-from typing import Literal, Annotated, Union
-
-from pydantic import Field
+from typing import Annotated, Literal
 
 from matchescu.comparison_space.persistence import CsvComparisonSpaceFileParams
-from matchescu.matching.config import ConfigModel, AnyDatasetConfig
+from matchescu.matching.config import AnyDatasetConfig, ConfigModel
+from pydantic import Field
 
 
 class ModelConfig(ConfigModel):
@@ -35,7 +34,7 @@ class DeepERConfig(ModelConfig):
 
 
 AnyMatcherConfig = Annotated[
-    Union[DittoConfig, DeepMatcherConfig, DeepERConfig],
+    DittoConfig | DeepMatcherConfig | DeepERConfig,
     Field(discriminator="type"),
 ]
 

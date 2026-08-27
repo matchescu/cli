@@ -3,15 +3,15 @@ from pathlib import Path
 
 import click
 import polars as pl
+from matchescu.similarity import GmlGraphPersistence, ReferenceGraph
 from rich.progress import Progress
 from sklearn.metrics import confusion_matrix
 
 from matchescu.cli.config import EvaluationConfig, new_benchmark_data_factory
 from matchescu.cli.data import load_comparison_space
 from matchescu.cli.runtime import get_options, make_absolute_path
-from matchescu.similarity import ReferenceGraph, GmlGraphPersistence
 
-from ._cmd_group import evaluate, EvalOptions
+from ._cmd_group import EvalOptions, evaluate
 from ._input_order import InputOrder, validate_input_order_option
 
 _LABEL_NAMES = {
@@ -105,7 +105,7 @@ def main(
         task = progress.add_task("compute confusion matrices", total=total_steps)
         cm_rows = []
         for ds_name, (y_true, matcher_dict) in labels.items():
-            true_labels = list(sorted({0, *y_true}))
+            true_labels = sorted({0, *y_true})
             for matcher_name, input_order_predictions in matcher_dict.items():
                 for input_order, y_pred in input_order_predictions:
                     # do something to store this

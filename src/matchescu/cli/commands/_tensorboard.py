@@ -1,16 +1,15 @@
 from pathlib import Path
-from typing import Optional
 
 import click
 import plotly.express as px
 import plotly.graph_objects as go
 import polars as pl
-from rich.progress import Progress, MofNCompleteColumn, TimeElapsedColumn
+from rich.progress import MofNCompleteColumn, Progress, TimeElapsedColumn
 from tensorboard.backend.event_processing import event_accumulator
 
+from matchescu.cli._cmd_group import matchescu
 from matchescu.cli.config import EvaluationConfig, JSONConfig
 from matchescu.cli.runtime import get_options, make_absolute_path
-from matchescu.cli._cmd_group import matchescu
 
 
 class PlotTensorboard(click.Command):
@@ -117,8 +116,8 @@ class PlotTensorboard(click.Command):
         df: pl.DataFrame,
         epoch_col: str,
         line_cols: list[str] | dict[str, str],
-        smooth_span: Optional[int] = None,
-        title: Optional[str] = None,
+        smooth_span: int | None = None,
+        title: str | None = None,
     ) -> go.Figure:
         col_names = list(line_cols)
         projection = [epoch_col] + col_names
@@ -166,33 +165,33 @@ class PlotTensorboard(click.Command):
         # Academic black-on-white styling
         fig.update_layout(
             template="simple_white",
-            font=dict(family="Arial, sans-serif", size=14, color="black"),
-            title_font=dict(size=16, color="black"),
-            legend=dict(
-                title_text="",
-                bgcolor="rgba(255,255,255,0)",
-                bordercolor="black",
-                borderwidth=1,
-            ),
-            xaxis=dict(
-                showgrid=True,
-                gridcolor="lightgrey",
-                linecolor="black",
-                linewidth=1,
-                ticks="outside",
-            ),
-            yaxis=dict(
-                showgrid=True,
-                gridcolor="lightgrey",
-                linecolor="black",
-                linewidth=1,
-                ticks="outside",
-            ),
+            font={"family": "Arial, sans-serif", "size": 14, "color": "black"},
+            title_font={"size": 16, "color": "black"},
+            legend={
+                "title_text": "",
+                "bgcolor": "rgba(255,255,255,0)",
+                "bordercolor": "black",
+                "borderwidth": 1,
+            },
+            xaxis={
+                "showgrid": True,
+                "gridcolor": "lightgrey",
+                "linecolor": "black",
+                "linewidth": 1,
+                "ticks": "outside",
+            },
+            yaxis={
+                "showgrid": True,
+                "gridcolor": "lightgrey",
+                "linecolor": "black",
+                "linewidth": 1,
+                "ticks": "outside",
+            },
             plot_bgcolor="white",
             paper_bgcolor="white",
         )
 
-        fig.update_traces(line=dict(width=2))
+        fig.update_traces(line={"width": 2})
         return fig
 
     def invoke(self, ctx: click.Context):

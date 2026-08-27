@@ -2,21 +2,20 @@ import os
 
 import click
 import polars as pl
+from matchescu.matching import Matcher
+from matchescu.similarity import GmlGraphPersistence, ReferenceGraph
+from matchescu.typing import EntityReference
+from pyresolvemetrics import f1, precision, recall
 from rich.progress import Progress
+from sklearn.metrics import matthews_corrcoef
 
 from matchescu.cli.config import EvaluationConfig, new_benchmark_data_factory
 from matchescu.cli.data import load_comparison_space
 from matchescu.cli.models import new_matcher
 from matchescu.cli.runtime import get_options, make_absolute_path
-from matchescu.matching import Matcher
-from matchescu.similarity import ReferenceGraph, GmlGraphPersistence
-from matchescu.typing import EntityReference
-from pyresolvemetrics import precision, recall, f1
-from sklearn.metrics import matthews_corrcoef
 
-from ._cmd_group import evaluate, EvalOptions
+from ._cmd_group import EvalOptions, evaluate
 from ._input_order import InputOrder, validate_input_order_option
-
 
 RESULT_SCHEMA_OVERRIDES = {
     "dataset": pl.String,
@@ -66,7 +65,11 @@ def _put_record_attr(record: dict, attr: str, value: object) -> dict:
 
 
 def _add_normal(
-    g: ReferenceGraph, matcher: Matcher, x: EntityReference, y: EntityReference, record: dict = None
+    g: ReferenceGraph,
+    matcher: Matcher,
+    x: EntityReference,
+    y: EntityReference,
+    record: dict | None = None,
 ) -> dict:
     match_result = matcher(x, y)
     g.add(match_result)
@@ -74,7 +77,11 @@ def _add_normal(
 
 
 def _add_reverse(
-    g: ReferenceGraph, matcher: Matcher, x: EntityReference, y: EntityReference, record: dict = None
+    g: ReferenceGraph,
+    matcher: Matcher,
+    x: EntityReference,
+    y: EntityReference,
+    record: dict | None = None,
 ) -> dict:
     match_result = matcher(y, x)
     g.add(match_result)
@@ -82,7 +89,11 @@ def _add_reverse(
 
 
 def _add_both(
-    g: ReferenceGraph, matcher: Matcher, x: EntityReference, y: EntityReference, record: dict = None
+    g: ReferenceGraph,
+    matcher: Matcher,
+    x: EntityReference,
+    y: EntityReference,
+    record: dict | None = None,
 ) -> dict:
     record = _add_normal(g, matcher, x, y, record)
     return _add_reverse(g, matcher, x, y, record)
@@ -155,9 +166,7 @@ def main(
                 graphs = {
                     order: ReferenceGraph(directed=True) for order in input_orders
                 }
-                model_results = {
-                    order: [] for order in input_orders
-                }
+                model_results = {order: [] for order in input_orders}
                 for x, y in cs_refs:
                     r = {
                         "dataset": benchmark_data.name,
@@ -166,7 +175,7 @@ def main(
                         "left_source": x.id.source,
                         "right_id": y.id.label,
                         "right_source": y.id.source,
-                        "true_label": benchmark_data.true_matches.get((x.id, y.id), 0)
+                        "true_label": benchmark_data.true_matches.get((x.id, y.id), 0),
                     }
                     for order, g in graphs.items():
                         add_to_graph = input_order_map[InputOrder(order)]
@@ -178,14 +187,21 @@ def main(
                 for order, g in graphs.items():
                     g.save(GmlGraphPersistence(graph_dir / f"{order}-graph.gml"))
 
-                    df = pl.DataFrame(data=model_results[order], schema_overrides=RESULT_SCHEMA_OVERRIDES).fill_nan(-1).fill_null(-1)
+                    df = (
+                        pl.DataFrame(
+                            data=model_results[order],
+                            schema_overrides=RESULT_SCHEMA_OVERRIDES,
+                        )
+                        .fill_nan(-1)
+                        .fill_null(-1)
+                    )
                     results_csv_path = graph_dir / f"{order}-result.csv"
                     df.write_csv(results_csv_path, include_header=True)
 
                     if model_config.type != "multiclass":
-                        true_matches = set(
+                        true_matches = {
                             cmp for cmp, label in cs_pair_gt.items() if label > 0
-                        )
+                        }
                         metrics = _compute_binary_classifier_metrics(
                             true_matches, g, order
                         )

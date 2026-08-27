@@ -2,12 +2,12 @@ from pathlib import Path
 
 from matchescu.matching.config import (
     AnyDatasetConfig,
-    MagellanBenchmarkDataConfig,
     CsvBenchmarkDataConfig,
+    MagellanBenchmarkDataConfig,
 )
 from matchescu.matching.evaluation.data.benchmark import (
-    MagellanBenchmarkDataBuilder,
     CsvBenchmarkDataBuilder,
+    MagellanBenchmarkDataBuilder,
 )
 
 

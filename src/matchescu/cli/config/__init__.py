@@ -1,20 +1,20 @@
 from ._config import (
     AmbiguityConfig,
-    EvaluationConfig,
     AnyMatcherConfig,
     DeepMatcherConfig,
     DittoConfig,
+    EvaluationConfig,
 )
 from ._config_adapters import new_benchmark_data_factory
 from ._manager import JSONConfig, TConfig
 
 __all__ = [
-    "EvaluationConfig",
-    "new_benchmark_data_factory",
-    "JSONConfig",
+    "AmbiguityConfig",
     "AnyMatcherConfig",
     "DeepMatcherConfig",
     "DittoConfig",
+    "EvaluationConfig",
+    "JSONConfig",
     "TConfig",
-    "AmbiguityConfig",
+    "new_benchmark_data_factory",
 ]

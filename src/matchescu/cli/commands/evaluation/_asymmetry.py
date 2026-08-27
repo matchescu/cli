@@ -1,21 +1,22 @@
 import logging
 import os
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
 
 import click
 import polars
-from rich.progress import Progress, TimeElapsedColumn, MofNCompleteColumn
-
-from matchescu.cli.config import new_benchmark_data_factory, EvaluationConfig
-from matchescu.cli.data import load_comparison_space
-from matchescu.cli.models import new_matcher
-from matchescu.cli.runtime import get_options, make_absolute_path
 from matchescu.matching.evaluation.data.benchmark import BenchmarkData
 from matchescu.reference_store.comparison_space import BinaryComparisonSpace
 from matchescu.typing import EntityReference
-from ._cmd_group import evaluate, EvalOptions
+from rich.progress import MofNCompleteColumn, Progress, TimeElapsedColumn
+
+from matchescu.cli.config import EvaluationConfig, new_benchmark_data_factory
+from matchescu.cli.data import load_comparison_space
+from matchescu.cli.models import new_matcher
+from matchescu.cli.runtime import get_options, make_absolute_path
+
 from ...config._config import AnyMatcherConfig
+from ._cmd_group import EvalOptions, evaluate
 
 os.environ["DISABLE_TQDM"] = "true"
 
