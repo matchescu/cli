@@ -351,19 +351,19 @@ class AmbiguityGenerator:
                 break
 
             best_ambiguity = None
-            best_id = None
-            for other_id, other_ref in other_refs.items():
+            best_cluster_id = None
+            for other_cluster_id, other_ref in other_refs.items():
                 score = self._ambiguity_score(ref, other_ref)
                 if best_ambiguity is None or score > best_ambiguity:
                     best_ambiguity = score
-                    best_id = other_id
+                    best_cluster_id = other_cluster_id
                 elif (
                     score == best_ambiguity
-                    and _ref_id_sort_key(other_id) < _ref_id_sort_key(best_id)
+                    and other_cluster_id < best_cluster_id
                 ):
-                    best_id = other_id
+                    best_cluster_id = other_cluster_id
             if self._min_ambiguity is None or best_ambiguity >= self._min_ambiguity:
-                result[cluster_id] = (best_id, best_ambiguity, other_refs[best_id])
+                result[cluster_id] = (best_cluster_id, best_ambiguity, other_refs[best_cluster_id])
             self._progress.advance(self._main_task)
 
         return result
@@ -939,6 +939,7 @@ def _analyse_optimum_threshold(
     introduce_ambiguity: AmbiguityGenerator,
     gmm_restarts: int = 50,
 ) -> tuple[pl.DataFrame, GmmFit, list[float]]:
+    print(f"analysing {data.name}")
     scores = introduce_ambiguity.best_pairing_scores()
     threshold_range = np.arange(
         analysis_start_value,
