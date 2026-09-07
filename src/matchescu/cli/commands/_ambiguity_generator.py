@@ -1,9 +1,10 @@
 import re
+from dataclasses import dataclass
 from difflib import SequenceMatcher
 from itertools import combinations, permutations
 from os import PathLike
 from pathlib import Path
-from typing import ClassVar
+from typing import Any, ClassVar
 
 import click
 import matplotlib.pyplot as plt
@@ -19,6 +20,7 @@ from matchescu.typing import (
 from matchescu.typing import (
     EntityReferenceIdentifier as RefId,
 )
+from polars import DataFrame
 from rich.progress import Progress
 from scipy.optimize import brentq
 from scipy.stats import norm
@@ -41,6 +43,27 @@ DIR = Path("./data/affiliationstrings/")
 TOP_N_BRIDGE_TERMS: int = 10
 
 type ComparisonData = tuple[RefId, RefId]
+
+
+@dataclass
+class GmmFit:
+    """Parameters of the two-component GMM fit used to derive the ambiguity threshold.
+
+    ``threshold`` is the exact (unrounded) score at which the posterior probability
+    of the genuine-overlap component equals 0.5 (the Bayes-optimal decision boundary),
+    or the midpoint of the two component means when the components are not separable.
+    The ``boundary_type`` field distinguishes the two cases so that degenerate fits
+    can be reported honestly rather than silently.
+    """
+
+    threshold: float
+    mu_genuine: float
+    sigma_genuine: float
+    pi_genuine: float
+    mu_superficial: float
+    sigma_superficial: float
+    pi_superficial: float
+    boundary_type: str  # "bayes_optimal" | "mean_midpoint"
 
 
 class AmbiguityGenerator:
@@ -610,20 +633,21 @@ def _compute_drops(bridge_counts: list[float]) -> list[tuple[int, int, float]]:
     ]
 
 
-def _find_gmm_highlight(df: pl.DataFrame) -> dict[str, dict]:
-    """Read the pre-computed GMM threshold from the DataFrame."""
-    gmm_theta = float(df["gmm_threshold"][0])
+def _find_gmm_highlight(df: pl.DataFrame, fit: GmmFit) -> dict[str, dict]:
+    """Locate the bridge count at the GMM threshold on the sweep frame."""
+    gmm_theta = fit.threshold
     thresholds = df["threshold"].to_list()
     counts = df["bridge_count"].to_list()
 
-    # Find the bridge count at the threshold closest to gmm_theta.
     closest_idx = int(np.argmin([abs(t - gmm_theta) for t in thresholds]))
 
     return {
         "gmm": {
             "threshold": gmm_theta,
             "bridge_count": counts[closest_idx],
-            "extra": None,
+            "extra": (
+                fit.boundary_type if fit.boundary_type != "bayes_optimal" else None
+            ),
         }
     }
 
@@ -711,84 +735,184 @@ def _plot_threshold_highlights(
         )
 
 
-def _render_threshold_plot(all_frames: list[pl.DataFrame]) -> None:
-    """Render one threshold-vs-bridge-count figure for all datasets."""
-    sns.set_theme(style="white", font_scale=1.1)
-    palette = sns.color_palette("tab10", n_colors=len(all_frames))
+def _render_threshold_plot(
+    all_frames: list[pl.DataFrame],
+    all_fits: list[GmmFit],
+    all_scores: list[list[float]],
+    out_path: Path,
+) -> None:
+    """Render the threshold-vs-bridge-count sweep as a 1×N faceted grid, one panel
+    per dataset with its own x/y scale and the x-axis cropped to the action region
+    ([min(scores)−1, max(scores)+1]). The GMM threshold is marked per panel.
+    Supplemental artifact — matplotlib titles carry the dataset name + boundary type."""
+    sns.set_theme(style="white", font_scale=1.0)
+    n = len(all_frames)
+    _fig, axes = plt.subplots(1, n, figsize=(3 * n, 3.2), sharey=False)
+    if n == 1:
+        axes = [axes]
 
-    _fig, ax = plt.subplots(figsize=(10, 5))
-
-    y_max = max(df["bridge_count"].max() for df in all_frames)
-
-    for idx, (df, color) in enumerate(zip(all_frames, palette)):
+    for ax, df, fit, scores in zip(axes, all_frames, all_fits, all_scores):
         dataset_name = df["dataset"][0]
-        _plot_dataset_line(ax, df, color, label=dataset_name)
-        highlights = _find_gmm_highlight(df)
-        _plot_threshold_highlights(ax, highlights, color, y_max, dataset_idx=idx)
+        thresholds = df["threshold"].to_list()
+        counts = df["bridge_count"].to_list()
 
-    # Extra bottom margin scales with number of datasets × number of criteria
-    n_criteria = len(_HIGHLIGHT_STYLES)
-    bottom_margin = 0.10 + len(all_frames) * n_criteria * 0.07
-    ax.set_ylim(bottom=-bottom_margin * y_max)
+        ax.plot(thresholds, counts, color="#1f77b4", linewidth=1.8)
+        ax.axvline(x=fit.threshold, color="black", linestyle="--", linewidth=1.0)
 
-    ax.set_xlabel("Threshold (θ)")
-    ax.set_ylabel("Bridge count")
+        # Crop x-axis to the action region.
+        scores_arr = np.array(scores, dtype=float)
+        x_lo = float(scores_arr.min()) - 1.0
+        x_hi = float(scores_arr.max()) + 1.0
+        ax.set_xlim(x_lo, x_hi)
 
-    _build_highlight_legend(ax)
+        # Annotation: θ and bridge count at θ, placed at the top.
+        bridge_at_theta = sum(1 for s in scores if s >= fit.threshold)
+        ann = f"θ={fit.threshold:.2f}\nb={bridge_at_theta}"
+        ax.annotate(
+            ann,
+            xy=(fit.threshold, counts[0] if counts else 0),
+            xytext=(0.5, 0.92),
+            textcoords="axes fraction",
+            ha="center",
+            fontsize=7,
+            color="black",
+        )
+
+        ax.set_title(f"{dataset_name} ({fit.boundary_type})", fontsize=9)
+        ax.set_xlabel("θ", fontsize=8)
+        if ax is axes[0]:
+            ax.set_ylabel("Bridge count", fontsize=8)
+        ax.tick_params(labelsize=7)
+        sns.despine(ax=ax)
+
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=150)
+    plt.close()
+
+
+def _render_gmm_fit_plot(
+    scores: list[float], fit: GmmFit, dataset_name: str, out_path: Path
+) -> None:
+    """Render the histogram of best-pairing scores with the two fitted Gaussian
+    density curves and the threshold marked, one figure per dataset."""
+    sns.set_theme(style="white", font_scale=1.1)
+    _fig, ax = plt.subplots(figsize=(7, 4))
+
+    scores_arr = np.array(scores, dtype=float)
+    lo = float(min(scores_arr.min(), fit.mu_superficial - 3 * fit.sigma_superficial))
+    hi = float(max(scores_arr.max(), fit.mu_genuine + 3 * fit.sigma_genuine))
+    x = np.linspace(lo, hi, 400)
+
+    ax.hist(
+        scores_arr,
+        bins="auto",
+        density=True,
+        color="lightgrey",
+        edgecolor="white",
+        label="best-pairing scores",
+    )
+
+    genuine_density = fit.pi_genuine * norm.pdf(x, fit.mu_genuine, fit.sigma_genuine)
+    superficial_density = fit.pi_superficial * norm.pdf(
+        x, fit.mu_superficial, fit.sigma_superficial
+    )
+
+    ax.plot(x, genuine_density, color="#2ca02c", linewidth=2, label="genuine overlap")
+    ax.plot(
+        x,
+        superficial_density,
+        color="#d62728",
+        linewidth=2,
+        label="superficial overlap",
+    )
+    ax.axvline(
+        x=fit.threshold,
+        color="black",
+        linestyle="--",
+        linewidth=1.2,
+        label=f"θ={fit.threshold:.2f}",
+    )
+
+    ax.set_xlabel("Ambiguity score")
+    ax.set_ylabel("Density")
+    ax.legend(fontsize=8, frameon=True)
     sns.despine()
     plt.tight_layout()
-    plt.savefig("threshold_analysis.png", dpi=150)
-    plt.show()
+    plt.savefig(out_path, dpi=150)
+    plt.close()
 
 
-def _gmm_threshold(scores: list[float]) -> float:
-    """
-    Fit a two-component Gaussian Mixture Model to ``scores`` and return the
-    threshold at which the posterior probability of belonging to the
-    high-score component equals 0.5.
+def _write_methodology_csv(rows: list[dict], out_path: Path) -> None:
+    """Write the per-dataset methodology summary CSV used to populate the paper's
+    ambiguity-injection table."""
+    df = pl.DataFrame(rows)
+    df.write_csv(out_path, include_header=True)
 
-    This is the score value where the weighted density of the high-score
-    Gaussian equals the weighted density of the low-score Gaussian, i.e. the
-    decision boundary under a Bayes-optimal classifier between the two
-    components.
 
-    Returns the midpoint of the two component means as a fallback if the
-    root-finding step fails (e.g. when the two components are not separable).
+def _fit_gmm_threshold(scores: list[float], n_init: int = 50) -> GmmFit:
+    """Fit a two-component Gaussian Mixture Model to ``scores`` and return the
+    Bayes-optimal decision boundary together with the fitted component parameters.
+
+    The scores are modelled as a mixture of two populations: *genuine* overlap
+    (high-mean component, pairs whose representatives meaningfully resemble each
+    other) and *superficial* overlap (low-mean component, pairs whose resemblance
+    is only on the surface). The threshold is the score at which the posterior
+    probability of belonging to the genuine component equals 0.5.
+
+    When the two components are not separable (the posterior never reaches 0.5
+    between the means), the threshold falls back to the midpoint of the two means
+    and ``boundary_type`` is set to ``"mean_midpoint"`` so the degenerate fit is
+    reportable.
+
+    Multiple random restarts (``n_init``) are used; ``GaussianMixture`` keeps the
+    run with the highest log-likelihood automatically.
     """
     X = np.array(scores).reshape(-1, 1)
 
-    gmm = GaussianMixture(n_components=2, covariance_type="full", random_state=0)
+    gmm = GaussianMixture(
+        n_components=2, covariance_type="full", n_init=n_init, random_state=0
+    )
     gmm.fit(X)
 
-    # Identify which component has the higher mean (the "substantive" one).
     means = gmm.means_.flatten()
-    high_idx = int(np.argmax(means))
-    low_idx = 1 - high_idx
+    high_idx = int(np.argmax(means))  # genuine = higher mean
+    low_idx = 1 - high_idx  # superficial = lower mean
 
-    w_high = gmm.weights_[high_idx]
-    mu_high, sigma_high = means[high_idx], np.sqrt(gmm.covariances_[high_idx, 0, 0])
+    w_genuine = gmm.weights_[high_idx]
+    mu_genuine = float(means[high_idx])
+    sigma_genuine = float(np.sqrt(gmm.covariances_[high_idx, 0, 0]))
 
-    w_low = gmm.weights_[low_idx]
-    mu_low, sigma_low = means[low_idx], np.sqrt(gmm.covariances_[low_idx, 0, 0])
+    w_superficial = gmm.weights_[low_idx]
+    mu_superficial = float(means[low_idx])
+    sigma_superficial = float(np.sqrt(gmm.covariances_[low_idx, 0, 0]))
 
     def posterior_diff(x):
-        """P(high | x) - 0.5, i.e. zero when the two components are equally likely."""
-        p_high = w_high * norm.pdf(x, mu_high, sigma_high)
-        p_low = w_low * norm.pdf(x, mu_low, sigma_low)
-        total = p_high + p_low
+        """P(genuine | x) - 0.5, zero when the two components are equally likely."""
+        p_genuine = w_genuine * norm.pdf(x, mu_genuine, sigma_genuine)
+        p_superficial = w_superficial * norm.pdf(x, mu_superficial, sigma_superficial)
+        total = p_genuine + p_superficial
         if total == 0:
             return -0.5
-        return (p_high / total) - 0.5
+        return (p_genuine / total) - 0.5
 
-    # The crossing point lies between the two means.
-    lo, hi = min(mu_low, mu_high), max(mu_low, mu_high)
+    lo, hi = min(mu_superficial, mu_genuine), max(mu_superficial, mu_genuine)
     try:
-        threshold = brentq(posterior_diff, lo, hi)
+        threshold = float(brentq(posterior_diff, lo, hi))
+        boundary_type = "bayes_optimal"
     except ValueError:
-        # No sign change found — components overlap heavily; use midpoint.
-        threshold = (mu_low + mu_high) / 2.0
+        threshold = (mu_superficial + mu_genuine) / 2.0
+        boundary_type = "mean_midpoint"
 
-    return round(threshold)
+    return GmmFit(
+        threshold=threshold,
+        mu_genuine=mu_genuine,
+        sigma_genuine=sigma_genuine,
+        pi_genuine=float(w_genuine),
+        mu_superficial=mu_superficial,
+        sigma_superficial=sigma_superficial,
+        pi_superficial=float(w_superficial),
+        boundary_type=boundary_type,
+    )
 
 
 def _analyse_optimum_threshold(
@@ -797,33 +921,159 @@ def _analyse_optimum_threshold(
     analysis_step_size: float,
     data: CsvBenchmarkData,
     introduce_ambiguity: AmbiguityGenerator,
-):
+    gmm_restarts: int = 50,
+) -> tuple[pl.DataFrame, GmmFit, list[float]]:
     scores = introduce_ambiguity.best_pairing_scores()
     threshold_range = np.arange(
         analysis_start_value,
         analysis_step_size * (analysis_step_count + 1),
         analysis_step_size,
     )
-    gmm_theta = _gmm_threshold(scores)
+    gmm_fit = _fit_gmm_threshold(scores, n_init=gmm_restarts)
 
-    return pl.DataFrame(
-        data=[
+    display_name = {
+        "affiliationstrings": "affiliations",
+        "cora1": "cora",
+        "fodors_zagat_nophone": "fodors-zagat-nophone",
+        "geographicalSettelments": "geographic-settlements",
+    }.get(data.name, data.name)
+    cluster_count = len(data.compute_clusters())
+
+    return (
+        pl.DataFrame(
+            data=[
+                {
+                    "dataset": display_name,
+                    "threshold": t,
+                    "bridge_count": sum(1 for s in scores if s >= t),
+                    "cluster_count": cluster_count,
+                }
+                for t in threshold_range
+            ]
+        ),
+        gmm_fit,
+        scores,
+    )
+
+
+def _write_analysis(
+    analysis_frames: list[DataFrame],
+    analysis_fits: list[GmmFit],
+    analysis_scores: list[list[float | int]],
+    methodology_rows: list[dict[Any, Any]],
+    plot_dir: Path,
+) -> None:
+    """Write out the ambiguity analysis of the data frames."""
+    if not analysis_frames:
+        return
+
+    plot_path = Path(plot_dir)
+    plot_path.mkdir(parents=True, exist_ok=True)
+
+    for df, fit, scores in zip(analysis_frames, analysis_fits, analysis_scores):
+        dataset_name = df["dataset"][0]
+        bell_path = plot_path / f"gmm_fit_{dataset_name}.png"
+        _render_gmm_fit_plot(scores, fit, dataset_name, bell_path)
+
+        bridge_count_at_theta = sum(1 for s in scores if s >= fit.threshold)
+        methodology_rows.append(
             {
-                "dataset": {
-                    "affiliationstrings": "affiliations",
-                    "cora1": "cora",
-                    "fodors_zagat_nophone": "fodors-zagat-nophone",
-                    "geographicalSettelments": "geographical-settlements",
-                }.get(data.name, data.name),
-                "threshold": theta,
-                "bridge_count": sum(1 for s in scores if s >= theta),
-                "cluster_count": len(data.compute_clusters()),
-                "cs_size": data.comparison_space_size,
-                "gmm_threshold": gmm_theta,
+                "dataset": dataset_name,
+                "cluster_count": df["cluster_count"][0],
+                "bridge_count_at_theta": bridge_count_at_theta,
+                "bridge_count_per_cluster": bridge_count_at_theta
+                / df["cluster_count"][0],
+                "theta": fit.threshold,
+                "mu_genuine": fit.mu_genuine,
+                "sigma_genuine": fit.sigma_genuine,
+                "pi_genuine": fit.pi_genuine,
+                "mu_superficial": fit.mu_superficial,
+                "sigma_superficial": fit.sigma_superficial,
+                "pi_superficial": fit.pi_superficial,
+                "boundary_type": fit.boundary_type,
             }
-            for theta in threshold_range
+        )
+
+    _write_methodology_csv(methodology_rows, plot_path / "ambiguity_methodology.csv")
+
+    # Write the full threshold sweep (structural theta-sensitivity) for the
+    # supplemental data package.
+    pl.concat(analysis_frames).write_csv(
+        plot_path / "ambiguity_threshold_sweep.csv", include_header=True
+    )
+
+    _render_threshold_plot(
+        analysis_frames,
+        analysis_fits,
+        analysis_scores,
+        plot_path / "threshold_analysis.png",
+    )
+
+
+def _generate_amb_datasets(
+    data: CsvBenchmarkData, ambiguity_generator: AmbiguityGenerator, output_dir: Path
+):
+    """Generate two datasets containing ambiguous bridge records."""
+    id_table, cluster_gt, directed_gt, undirected_gt = ambiguity_generator()
+    table_ = [
+        {
+            "id": ref.id.label,
+            "source": str(ref.id.source),
+            **{
+                k: v
+                for k, v in ref.as_dict().items()
+                if k not in {"source", "target", "target_cluster_id"}
+            },
+        }
+        for ref in id_table
+    ]
+    data_df = pl.DataFrame(table_)
+    clusters_df = pl.DataFrame(
+        [
+            {"id": ref_id.label, "source": ref_id.source, "cluster_id": cluster_id}
+            for cluster_id, ref_ids in cluster_gt.items()
+            for ref_id in ref_ids
         ]
     )
+    directed_df = pl.DataFrame(
+        [
+            {
+                "left_id": left_id.label,
+                "left_source": left_id.source,
+                "right_id": right_id.label,
+                "right_source": right_id.source,
+                "label": c,
+            }
+            for (left_id, right_id), c in directed_gt.items()
+        ]
+    )
+    undirected_df = pl.DataFrame(
+        [
+            {
+                "left_id": left_id.label,
+                "left_source": left_id.source,
+                "right_id": right_id.label,
+                "right_source": right_id.source,
+                "label": c,
+            }
+            for (left_id, right_id), c in undirected_gt.items()
+        ]
+    )
+    directed_undirected = {
+        f"amb_{data.name}": undirected_df,
+        f"amb_{data.name}_dir": directed_df,
+    }
+
+    for output_dataset_name, mapping_df in directed_undirected.items():
+        dataset_output_path = output_dir / output_dataset_name
+        dataset_output_path.mkdir(parents=True, exist_ok=True)
+        file_map = {
+            f"{output_dataset_name}_ids.csv": data_df,
+            f"{output_dataset_name}_mapping.csv": mapping_df,
+            f"{output_dataset_name}_cluster_mapping.csv": clusters_df,
+        }
+        for name, df in file_map.items():
+            df.write_csv(dataset_output_path / name, include_header=True)
 
 
 @matchescu.command("ambiguity-generator")
@@ -878,6 +1128,24 @@ def _analyse_optimum_threshold(
     required=False,
     help="How large should the difference between consecutive thresholds be for one-factor-at-a-time analysis",
 )
+@click.option(
+    "--gmm-restarts",
+    "gmm_restarts",
+    type=click.INT,
+    default=50,
+    required=False,
+    help="Number of random restarts for the Gaussian mixture model fit",
+)
+@click.option(
+    "--plot-dir",
+    "plot_dir",
+    type=click.Path(
+        exists=False, file_okay=False, dir_okay=True, writable=True, resolve_path=True
+    ),
+    default=".",
+    required=False,
+    help="Directory where plots and the methodology CSV are written",
+)
 @click.pass_context
 def main(
     ctx: Context,
@@ -887,6 +1155,8 @@ def main(
     analysis_step_count: float,
     analysis_step_size: float,
     analysis_start_value: float,
+    gmm_restarts: int,
+    plot_dir: str | PathLike,
 ):
     """Introduce ambiguous data into existing dataset."""
     root_dir = get_options(ctx).root_dir
@@ -898,88 +1168,38 @@ def main(
     output_dir = make_absolute_path(output_dir, root_dir)
 
     analysis_frames: list[pl.DataFrame] = []
+    analysis_fits: list[GmmFit] = []
+    analysis_scores: list[list[float]] = []
+    methodology_rows: list[dict] = []
     for ds_idx, input_cfg in enumerate(config.input_data):
         print("processing", input_cfg.dataset.directory)
         builder = new_benchmark_data_factory(input_cfg.dataset, root_dir)
         data = builder.load_data().create()
-        introduce_ambiguity = AmbiguityGenerator(
+        amb_generator = AmbiguityGenerator(
             data.id_table,
             data.true_matches,
             data.compute_clusters(),
             input_cfg.ambiguity_targets,
             min_ambiguity=input_cfg.min_ambiguity,
         )
+
+        # in analysis mode, only compute the optimal cutoff point at which
+        # realistic bridge records would be hard to generate and move on
         if is_analysis_mode:
-            analysis_frames.append(
-                _analyse_optimum_threshold(
-                    analysis_start_value,
-                    analysis_step_count,
-                    analysis_step_size,
-                    data,
-                    introduce_ambiguity,
-                )
+            sweep_df, gmm_fit, scores = _analyse_optimum_threshold(
+                analysis_start_value,
+                analysis_step_count,
+                analysis_step_size,
+                data,
+                amb_generator,
+                gmm_restarts=gmm_restarts,
             )
-            continue
-        id_table, cluster_gt, directed_gt, undirected_gt = introduce_ambiguity()
-        table_ = [
-            {
-                "id": ref.id.label,
-                "source": str(ref.id.source),
-                **{
-                    k: v
-                    for k, v in ref.as_dict().items()
-                    if k not in {"source", "target", "target_cluster_id"}
-                },
-            }
-            for ref in id_table
-        ]
-        data_df = pl.DataFrame(table_)
-        clusters_df = pl.DataFrame(
-            [
-                {"id": ref_id.label, "source": ref_id.source, "cluster_id": cluster_id}
-                for cluster_id, ref_ids in cluster_gt.items()
-                for ref_id in ref_ids
-            ]
-        )
-        directed_df = pl.DataFrame(
-            [
-                {
-                    "left_id": left_id.label,
-                    "left_source": left_id.source,
-                    "right_id": right_id.label,
-                    "right_source": right_id.source,
-                    "label": c,
-                }
-                for (left_id, right_id), c in directed_gt.items()
-            ]
-        )
-        undirected_df = pl.DataFrame(
-            [
-                {
-                    "left_id": left_id.label,
-                    "left_source": left_id.source,
-                    "right_id": right_id.label,
-                    "right_source": right_id.source,
-                    "label": c,
-                }
-                for (left_id, right_id), c in undirected_gt.items()
-            ]
-        )
-        directed_undirected = {
-            f"amb_{data.name}": undirected_df,
-            f"amb_{data.name}_dir": directed_df,
-        }
+            analysis_frames.append(sweep_df)
+            analysis_fits.append(gmm_fit)
+            analysis_scores.append(scores)
+        else:
+            _generate_amb_datasets(data, amb_generator, output_dir)
 
-        for output_dataset_name, mapping_df in directed_undirected.items():
-            dataset_output_path = output_dir / output_dataset_name
-            dataset_output_path.mkdir(parents=True, exist_ok=True)
-            file_map = {
-                f"{output_dataset_name}_ids.csv": data_df,
-                f"{output_dataset_name}_mapping.csv": mapping_df,
-                f"{output_dataset_name}_cluster_mapping.csv": clusters_df,
-            }
-            for name, df in file_map.items():
-                df.write_csv(dataset_output_path / name, include_header=True)
-
-    if analysis_frames:
-        _render_threshold_plot(analysis_frames)
+    _write_analysis(
+        analysis_frames, analysis_fits, analysis_scores, methodology_rows, plot_dir
+    )
