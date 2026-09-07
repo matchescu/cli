@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "matchescu-cli"
-version = "0.5.0"
+version = "0.5.1"
 description = "Command-line interface to the Matchescu entity resolution system"
 authors = ["Andrei Olar <andrei.olar@ubbcluj.ro>"]
 readme = "README.md"
