@@ -997,16 +997,17 @@ def _write_analysis(
             {
                 "dataset": dataset_name,
                 "cluster_count": df["cluster_count"][0],
-                "bridge_count_at_theta": bridge_count_at_theta,
-                "bridge_count_per_cluster": bridge_count_at_theta
-                / df["cluster_count"][0],
-                "theta": fit.threshold,
-                "mu_genuine": fit.mu_genuine,
-                "sigma_genuine": fit.sigma_genuine,
-                "pi_genuine": fit.pi_genuine,
-                "mu_superficial": fit.mu_superficial,
-                "sigma_superficial": fit.sigma_superficial,
-                "pi_superficial": fit.pi_superficial,
+                "bridge_count_at_theta": int(bridge_count_at_theta),
+                "bridge_count_per_cluster": round(
+                    bridge_count_at_theta / df["cluster_count"][0], 2
+                ),
+                "theta": round(fit.threshold, 2),
+                "mu_genuine": round(fit.mu_genuine, 2),
+                "sigma_genuine": round(fit.sigma_genuine, 2),
+                "pi_genuine": round(fit.pi_genuine, 2),
+                "mu_superficial": round(fit.mu_superficial, 2),
+                "sigma_superficial": round(fit.sigma_superficial, 2),
+                "pi_superficial": round(fit.pi_superficial, 2),
                 "boundary_type": fit.boundary_type,
             }
         )
