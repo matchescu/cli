@@ -45,6 +45,11 @@ TOP_N_BRIDGE_TERMS: int = 10
 type ComparisonData = tuple[RefId, RefId]
 
 
+def _ref_id_sort_key(ref_id: RefId):
+    """Stable, process-independent sort key for ``EntityReferenceIdentifier``."""
+    return (ref_id.source, ref_id.label)
+
+
 @dataclass
 class GmmFit:
     """Parameters of the two-component GMM fit used to derive the ambiguity threshold.
@@ -101,7 +106,13 @@ class AmbiguityGenerator:
         self._cluster_count = len(clusters)
         self._cluster_id_map = {
             cluster_idx: set(cluster)
-            for cluster_idx, cluster in enumerate(clusters, start=1)
+            for cluster_idx, cluster in enumerate(
+                sorted(
+                    clusters,
+                    key=lambda c: sorted(_ref_id_sort_key(r) for r in c),
+                ),
+                start=1,
+            )
         }
         self._degradation_patterns = (
             string_degradation_patterns or self._DEFAULT_DEGRADATION_PATTERNS
@@ -296,7 +307,7 @@ class AmbiguityGenerator:
             self._progress.update(
                 self._main_task, description=f"nominating [{cluster_id}] cluster rep"
             )
-            candidates = list(ref_ids)
+            candidates = sorted(ref_ids, key=_ref_id_sort_key)
             refs = list(self._id_table.get_all(candidates))
             rep_idx = 0
             if len(refs) > 1:
@@ -345,6 +356,11 @@ class AmbiguityGenerator:
                 score = self._ambiguity_score(ref, other_ref)
                 if best_ambiguity is None or score > best_ambiguity:
                     best_ambiguity = score
+                    best_id = other_id
+                elif (
+                    score == best_ambiguity
+                    and _ref_id_sort_key(other_id) < _ref_id_sort_key(best_id)
+                ):
                     best_id = other_id
             if self._min_ambiguity is None or best_ambiguity >= self._min_ambiguity:
                 result[cluster_id] = (best_id, best_ambiguity, other_refs[best_id])
