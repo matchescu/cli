@@ -802,7 +802,7 @@ def _render_threshold_plot(
         sns.despine(ax=ax)
 
     plt.tight_layout()
-    plt.savefig(out_path, dpi=150)
+    plt.savefig(out_path, dpi=300)
     plt.close()
 
 
@@ -854,7 +854,7 @@ def _render_gmm_fit_plot(
     ax.legend(fontsize=8, frameon=True)
     sns.despine()
     plt.tight_layout()
-    plt.savefig(out_path, dpi=150)
+    plt.savefig(out_path, dpi=300)
     plt.close()
 
 

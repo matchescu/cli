@@ -239,7 +239,7 @@ class PlotTensorboard(click.Command):
                 output_path = (
                     output_dir / f"fig_{model_config.name}_{ds_name}_training.png"
                 )
-                figure.write_image(output_path)
+                figure.write_image(output_path, scale=4)
 
 
 matchescu.add_command(PlotTensorboard())
