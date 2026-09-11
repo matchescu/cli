@@ -41,7 +41,10 @@ CLUSTERING_ALGOS: dict[str, ClusteringAlgorithm[RefId]] = {
     "LEI": LeidenPartitioning,
     "SC": cast(
         ClusteringAlgorithm,
-        cast(object, partial(SpectralClustering, detect_wcc=True)),
+        cast(
+            object,
+            partial(SpectralClustering, detect_wcc=True, max_power_iterations=100000),
+        ),
     ),
 }
 CLUSTER_METRICS = [

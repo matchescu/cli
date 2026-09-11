@@ -357,13 +357,14 @@ class AmbiguityGenerator:
                 if best_ambiguity is None or score > best_ambiguity:
                     best_ambiguity = score
                     best_cluster_id = other_cluster_id
-                elif (
-                    score == best_ambiguity
-                    and other_cluster_id < best_cluster_id
-                ):
+                elif score == best_ambiguity and other_cluster_id < best_cluster_id:
                     best_cluster_id = other_cluster_id
             if self._min_ambiguity is None or best_ambiguity >= self._min_ambiguity:
-                result[cluster_id] = (best_cluster_id, best_ambiguity, other_refs[best_cluster_id])
+                result[cluster_id] = (
+                    best_cluster_id,
+                    best_ambiguity,
+                    other_refs[best_cluster_id],
+                )
             self._progress.advance(self._main_task)
 
         return result
