@@ -1833,14 +1833,14 @@ stopwords = ">=1.0.2,<2.0.0"
 
 [[package]]
 name = "matchescu-matching"
-version = "0.24.5"
+version = "0.25.0"
 description = "Common types and algorithms used for matching two information"
 optional = false
 python-versions = "<3.14,>=3.13"
 groups = ["main"]
 files = [
-    {file = "matchescu_matching-0.24.5-py3-none-any.whl", hash = "sha256:fa50caa4088fe54ce3c619979dc78aed8bf0f20dbfae14647bc57bf8919339c0"},
-    {file = "matchescu_matching-0.24.5.tar.gz", hash = "sha256:8c9ebe65fd8554cd34a94e0445910f529a1bb2960ef590892a03307cecdb7304"},
+    {file = "matchescu_matching-0.25.0-py3-none-any.whl", hash = "sha256:0e2572e3d459703a15d529aed25460809edf9909e7c8b787df3ba3bdfa6237c5"},
+    {file = "matchescu_matching-0.25.0.tar.gz", hash = "sha256:fc5c2e38eda007e20dbbbbf455dd0e9f8be98546123c056cb6a2afa059c4249e"},
 ]
 
 [package.dependencies]
@@ -4652,4 +4652,4 @@ type = ["pytest-mypy (>=1.0.1) ; platform_python_implementation != \"PyPy\""]
 [metadata]
 lock-version = "2.1"
 python-versions = "!=3.14.1,~3.13"
-content-hash = "cda4e0be8005c983b7212f973a04a7812e607da8d5c8b2eef5fd97942ffbe6c3"
+content-hash = "745a2a4ef9a0e38ba0d6c66a7d5de9b575f322f9b49e1a829f53702dfe50a1f2"
