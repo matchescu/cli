@@ -85,6 +85,7 @@ class EvaluationConfig(ConfigModel):
 class AmbiguityDataConfig(ConfigModel):
     dataset: AnyDatasetConfig
     ambiguity_targets: list[str] = None
+    secondary_features: list[str] = None
     min_ambiguity: float = None
 
 

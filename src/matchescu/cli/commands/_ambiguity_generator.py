@@ -1,4 +1,6 @@
 import re
+import warnings
+from collections import Counter
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from itertools import combinations, permutations
@@ -72,6 +74,9 @@ class GmmFit:
 
 
 class AmbiguityGenerator:
+    _RESERVED_REF_PROPERTIES: ClassVar[frozenset[str]] = frozenset(
+        {"source", "target", "target_cluster_id"}
+    )
     _DEFAULT_DEGRADATION_PATTERNS: ClassVar[list[str]] = [
         r",\s*USA",
         r",\s*US",
@@ -98,6 +103,7 @@ class AmbiguityGenerator:
         mapping_gt: dict[ComparisonData, int],
         clusters: frozenset[frozenset[RefId]],
         ambiguity_target_properties: list[str] | None = None,
+        secondary_features: list[str] | None = None,
         string_degradation_patterns: list[str] | None = None,
         min_ambiguity: float | None = None,
     ) -> None:
@@ -118,6 +124,8 @@ class AmbiguityGenerator:
             string_degradation_patterns or self._DEFAULT_DEGRADATION_PATTERNS
         )
         self._target_properties = set(ambiguity_target_properties or [])
+        self._secondary_features = set(secondary_features or [])
+        self._validate_secondary_features()
         n_total_steps = 3 * self._cluster_count
         self._progress = Progress()
         self._main_task = self._progress.add_task(
@@ -125,6 +133,18 @@ class AmbiguityGenerator:
         )
         self._min_ambiguity = min_ambiguity
         self._bridge_terms = self._build_bridge_terms()
+
+    def _validate_secondary_features(self) -> None:
+        if self._secondary_features & self._target_properties:
+            raise ValueError(
+                "secondary features must not overlap ambiguity target properties"
+            )
+        reserved = self._secondary_features & self._RESERVED_REF_PROPERTIES
+        if reserved:
+            raise ValueError(
+                f"secondary features must not contain reserved properties: "
+                f"{sorted(reserved)}"
+            )
 
     def _build_bridge_terms(self) -> list[str]:
         """Build dataset-specific bridge terms using TF/IDF on the id table.
@@ -551,9 +571,39 @@ class AmbiguityGenerator:
 
         return ranked[:n]
 
+    @staticmethod
+    def _copy_secondary_feature(
+        source_dict: dict,
+        target_dict: dict,
+        key: str,
+        counts: Counter,
+    ):
+        home_value = source_dict.get(key, None) or None
+        if home_value is None:
+            counts["missing"] += 1
+            warnings.warn(
+                f"secondary feature '{key}' missing or empty on home representative; skipping"
+            )
+            return None
+        counts["copied"] += 1
+        if key in target_dict and target_dict[key] == home_value:
+            counts["equal"] += 1
+        return home_value
+
+    def _print_secondary_feature_summary(self, counts: dict[str, Counter]) -> None:
+        if not self._secondary_features:
+            return
+        for key in sorted(counts):
+            stats = counts[key]
+            print(
+                f"secondary feature [{key}]: copied={stats['copied']}, "
+                f"missing={stats['missing']}, equal={stats['equal']}"
+            )
+
     def _generate_ambiguous_references(self, cluster_reps, closest_correspondents):
         max_id = max(r.id.label for r in self._id_table)
         start_refs = {k: self._id_table.get(v) for k, v in cluster_reps.items()}
+        secondary_counts = {k: Counter() for k in self._secondary_features}
 
         ambiguous_refs = {}
         for cluster_id, start_ref in start_refs.items():
@@ -574,6 +624,13 @@ class AmbiguityGenerator:
                 "target_cluster_id": target_cluster_id,
             }
             for k in all_keys:
+                if k in self._secondary_features:
+                    home_value = self._copy_secondary_feature(
+                        source_dict, target_dict, k, secondary_counts[k]
+                    )
+                    if home_value is not None:
+                        ref_properties[k] = home_value
+                    continue
                 # attribute in one but not the other -> continue
                 if (k in source_dict) ^ (k in target_dict):
                     continue
@@ -598,6 +655,7 @@ class AmbiguityGenerator:
             ambiguous_refs[cluster_id] = new_ref.id
             max_id += 1
             self._progress.advance(self._main_task)
+        self._print_secondary_feature_summary(secondary_counts)
         return ambiguous_refs
 
     def best_pairing_scores(self) -> list[float]:
@@ -1165,6 +1223,12 @@ def _generate_amb_datasets(
     required=False,
     help="Directory where plots and the methodology CSV are written",
 )
+@click.option(
+    "--secondary-features",
+    "secondary_features",
+    default=None,
+    help="Comma-separated secondary features to copy from the home representative.",
+)
 @click.pass_context
 def main(
     ctx: Context,
@@ -1176,6 +1240,7 @@ def main(
     analysis_start_value: float,
     gmm_restarts: int,
     plot_dir: str | PathLike,
+    secondary_features: str | None,
 ):
     """Introduce ambiguous data into existing dataset."""
     root_dir = get_options(ctx).root_dir
@@ -1185,6 +1250,13 @@ def main(
         .config_obj
     )
     output_dir = make_absolute_path(output_dir, root_dir)
+    cli_secondary_features = None
+    if secondary_features:
+        cli_secondary_features = [
+            feature.strip()
+            for feature in secondary_features.split(",")
+            if feature.strip()
+        ]
 
     analysis_frames: list[pl.DataFrame] = []
     analysis_fits: list[GmmFit] = []
@@ -1199,6 +1271,7 @@ def main(
             data.true_matches,
             data.compute_clusters(),
             input_cfg.ambiguity_targets,
+            secondary_features=cli_secondary_features or input_cfg.secondary_features,
             min_ambiguity=input_cfg.min_ambiguity,
         )
 
