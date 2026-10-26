@@ -430,6 +430,58 @@ class AmbiguityGenerator:
         return h, sa, sb
 
     @classmethod
+    def _score_pool(cls, val_a, val_b, bridge_terms) -> list[tuple[str, float, float]]:
+        # returns (candidate, home, target) sorted by candidate.
+        # mirrors _score: candidates equal to an input (case-insensitive) get (0.0, 0.0)."""
+        words = list(
+            dict.fromkeys(w for w in val_a.split() + val_b.split() if len(w) > 2)
+        )
+        bt = list(dict.fromkeys(list(bridge_terms or []) + words))
+        lo = (val_a.lower(), val_b.lower())
+        out = []
+        for c in cls._candidates(val_a, val_b, bt):
+            if c.lower() in lo:
+                out.append((c, 0.0, 0.0))
+            else:
+                out.append(
+                    (
+                        c,
+                        cls._weighted_similarity(c, val_a),
+                        cls._weighted_similarity(c, val_b),
+                    )
+                )
+        return sorted(out)
+
+    @staticmethod
+    def _pick(scored, alpha: float, floor: float = 0.0):
+        # returns the argmax of the weighted harmonic mean
+        # s_h*s_t/(s_t*alpha + s_h*(1-alpha))
+        # when alpha = 0.5 -> 2*s_h*s_t / (s_h + s_t)
+        # returns (candidate, h, home, target)
+        # if nothing qualifies -> None
+        best, best_h = None, -1.0
+        for c, sa, sb in scored:
+            if sb < floor:
+                continue
+            h = 0.0
+            if sa > 0 and sb > 0:
+                denominator = (alpha / sa) + (1 - alpha) / sb
+                h = 1.0 / denominator
+            if h > best_h:
+                best, best_h = (c, h, sa, sb), h
+        return best
+
+    @staticmethod
+    def _fallback_text(val_a: str, val_b: str) -> str:
+        uq_words = dict.fromkeys(
+            w for w in val_a.split() + val_b.split() if len(w) > 2
+        )
+        for word in uq_words:
+            if word.lower() not in (val_a.lower(), val_b.lower()):
+                return word
+        return val_a
+
+    @classmethod
     def _cpfx(cls, a: str, b: str) -> str:
         """Longest common case-insensitive prefix, preserving case from *a*."""
         i = 0
@@ -647,10 +699,12 @@ class AmbiguityGenerator:
                     if k not in self._target_properties:
                         ref_properties[k] = ""
                     else:
-                        results = self._generate_ambiguous_text(
-                            val_a, val_b, 1, self._bridge_terms
+                        pick = self._pick(
+                            self._score_pool(val_a, val_b, self._bridge_terms), 0.5
                         )
-                        ref_properties[k] = results[0][0] if results else val_a
+                        ref_properties[k] = (
+                            pick[0] if pick else self._fallback_text(val_a, val_b)
+                        )
                 else:
                     ref_properties[k] = None
             new_ref = EntityReference(
@@ -696,7 +750,7 @@ class AmbiguityGenerator:
             undirected_gt: dict[ComparisonData, int] = {}
             bridge_ids = set(ambiguous_refs.values())
             for cluster_id, ref_ids in cluster_gt.items():
-                sorted_ref_ids = list(sorted(ref_ids, key=_ref_id_sort_key))
+                sorted_ref_ids = sorted(ref_ids, key=_ref_id_sort_key)
                 for left, right in combinations(sorted_ref_ids, 2):
                     cmp_data = _orient(left, right, bridge_ids)
                     undirected_gt[cmp_data] = 1
