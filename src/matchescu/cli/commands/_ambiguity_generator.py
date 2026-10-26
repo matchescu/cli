@@ -111,7 +111,13 @@ class AmbiguityGenerator:
         secondary_features: list[str] | None = None,
         string_degradation_patterns: list[str] | None = None,
         min_ambiguity: float | None = None,
+        alphas: tuple[float, ...] = (0.5,),
+        target_floor: float = 0.0,
     ) -> None:
+        if not all(0 < alpha < 1 for alpha in alphas):
+            raise ValueError("alphas must be in (0, 1)")
+        if not 0 <= target_floor <= 1:
+            raise ValueError("target_floor must be in [0, 1]")
         self._mapping_gt = mapping_gt
         self._id_table = id_table
         self._cluster_count = len(clusters)
@@ -138,6 +144,9 @@ class AmbiguityGenerator:
         )
         self._min_ambiguity = min_ambiguity
         self._bridge_terms = self._build_bridge_terms()
+        self._alphas = tuple(sorted(set(alphas)))
+        self._target_floor = target_floor
+        self.bridge_log: list[dict] = []
 
     def _validate_secondary_features(self) -> None:
         if self._secondary_features & self._target_properties:
@@ -473,9 +482,7 @@ class AmbiguityGenerator:
 
     @staticmethod
     def _fallback_text(val_a: str, val_b: str) -> str:
-        uq_words = dict.fromkeys(
-            w for w in val_a.split() + val_b.split() if len(w) > 2
-        )
+        uq_words = dict.fromkeys(w for w in val_a.split() + val_b.split() if len(w) > 2)
         for word in uq_words:
             if word.lower() not in (val_a.lower(), val_b.lower()):
                 return word
@@ -662,7 +669,7 @@ class AmbiguityGenerator:
         start_refs = {k: self._id_table.get(v) for k, v in cluster_reps.items()}
         secondary_counts = {k: Counter() for k in self._secondary_features}
 
-        ambiguous_refs = {}
+        ambiguous_refs = {alpha: {} for alpha in self._alphas}
         for cluster_id, start_ref in start_refs.items():
             self._progress.update(
                 self._main_task,
@@ -675,10 +682,13 @@ class AmbiguityGenerator:
             source_dict = start_ref.as_dict()
             target_dict = target.as_dict()
             all_keys = set(source_dict.keys()) | set(target_dict.keys())
-            ref_properties = {
-                "source": start_ref,
-                "target": target,
-                "target_cluster_id": target_cluster_id,
+            per_alpha_props = {
+                alpha: {
+                    "source": start_ref,
+                    "target": target,
+                    "target_cluster_id": target_cluster_id,
+                }
+                for alpha in self._alphas
             }
             for k in sorted(all_keys):
                 if k in self._secondary_features:
@@ -686,7 +696,8 @@ class AmbiguityGenerator:
                         source_dict, target_dict, k, secondary_counts[k]
                     )
                     if home_value is not None:
-                        ref_properties[k] = home_value
+                        for props in per_alpha_props.values():
+                            props[k] = home_value
                     continue
                 # attribute in one but not the other -> continue
                 if (k in source_dict) ^ (k in target_dict):
@@ -694,28 +705,74 @@ class AmbiguityGenerator:
                 val_a = start_ref[k]
                 val_b = target[k]
                 if val_a == val_b:
-                    ref_properties[k] = val_a
+                    for props in per_alpha_props.values():
+                        props[k] = val_a
                 elif isinstance(val_a, str) and isinstance(val_b, str):
                     if k not in self._target_properties:
-                        ref_properties[k] = ""
+                        for props in per_alpha_props.values():
+                            props[k] = ""
                     else:
-                        pick = self._pick(
-                            self._score_pool(val_a, val_b, self._bridge_terms), 0.5
-                        )
-                        ref_properties[k] = (
-                            pick[0] if pick else self._fallback_text(val_a, val_b)
-                        )
+                        scored = self._score_pool(val_a, val_b, self._bridge_terms)
+                        sym = self._pick(scored, 0.5)
+                        floor = self._target_floor * sym[3] if sym else 0.0
+                        for alpha in self._alphas:
+                            pick = self._pick(scored, alpha, floor)
+                            value = (
+                                pick[0] if pick else self._fallback_text(val_a, val_b)
+                            )
+                            per_alpha_props[alpha][k] = value
+                            self.bridge_log.append(
+                                {
+                                    "alpha": alpha,
+                                    "bridge_label": max_id + 1,
+                                    "home_cluster": cluster_id,
+                                    "target_cluster": target_cluster_id,
+                                    "field": k,
+                                    "value": value,
+                                    "sim_home": pick[2] if pick else None,
+                                    "sim_target": pick[3] if pick else None,
+                                    "share_home": (
+                                        pick[2] / (pick[2] + pick[3])
+                                        if pick and pick[2] + pick[3] > 0
+                                        else None
+                                    ),
+                                    "fallback": pick is None,
+                                }
+                            )
                 else:
-                    ref_properties[k] = None
-            new_ref = EntityReference(
-                RefId(max_id + 1, "ambiguity-generator"), ref_properties
-            )
-            self._id_table.put(new_ref)
-            ambiguous_refs[cluster_id] = new_ref.id
+                    for props in per_alpha_props.values():
+                        props[k] = None
+            for alpha, props in per_alpha_props.items():
+                new_ref = EntityReference(
+                    RefId(max_id + 1, "ambiguity-generator"), props
+                )
+                ambiguous_refs[alpha][cluster_id] = new_ref
             max_id += 1
             self._progress.advance(self._main_task)
         self._print_secondary_feature_summary(secondary_counts)
         return ambiguous_refs
+
+    def _build_ground_truth(self, bridges, alpha):
+        cluster_gt: dict[int, set[RefId]] = {
+            cid: set(refs) for cid, refs in self._cluster_id_map.items()
+        }
+        for cluster_id, ref in bridges.items():
+            cluster_gt[cluster_id].add(ref.id)
+
+        directed_gt: dict[ComparisonData, int] = {}
+        undirected_gt: dict[ComparisonData, int] = {}
+        bridge_ids = {ref.id for ref in bridges.values()}
+        for cluster_id, ref_ids in cluster_gt.items():
+            sorted_ref_ids = sorted(ref_ids, key=_ref_id_sort_key)
+            for left, right in combinations(sorted_ref_ids, 2):
+                cmp_data = _orient(left, right, bridge_ids)
+                undirected_gt[cmp_data] = 1
+                directed_gt[cmp_data] = 1
+            if (bridge := bridges.get(cluster_id)) is not None:
+                cmp_data = (bridge.target.id, bridge.id)
+                undirected_gt[cmp_data] = 1
+                directed_gt[cmp_data] = 2
+        return cluster_gt, directed_gt, undirected_gt
 
     def best_pairing_scores(self) -> list[float]:
         """Best ambiguity score per cluster, independent of the threshold."""
@@ -726,11 +783,14 @@ class AmbiguityGenerator:
         self._min_ambiguity = saved
         return [score for _, score, _ in pairings.values()]
 
-    def __call__(self) -> tuple[
-        IdTable,
-        dict[int, set[RefId]],
-        dict[tuple[RefId, RefId], int],
-        dict[tuple[RefId, RefId], int],
+    def __call__(self) -> dict[
+        float,
+        tuple[
+            list[EntityReference],
+            dict[int, set[RefId]],
+            dict[ComparisonData, int],
+            dict[ComparisonData, int],
+        ],
     ]:
         self._progress.start()
         try:
@@ -739,30 +799,19 @@ class AmbiguityGenerator:
             ambiguous_refs = self._generate_ambiguous_references(
                 cluster_reps, closest_reps
             )
-
-            cluster_gt: dict[int, set[RefId]] = {
-                cid: set(refs) for cid, refs in self._cluster_id_map.items()
-            }
-            for cluster_id, ref in ambiguous_refs.items():
-                cluster_gt[cluster_id].add(ref)
-
-            directed_gt: dict[ComparisonData, int] = {}
-            undirected_gt: dict[ComparisonData, int] = {}
-            bridge_ids = set(ambiguous_refs.values())
-            for cluster_id, ref_ids in cluster_gt.items():
-                sorted_ref_ids = sorted(ref_ids, key=_ref_id_sort_key)
-                for left, right in combinations(sorted_ref_ids, 2):
-                    cmp_data = _orient(left, right, bridge_ids)
-                    undirected_gt[cmp_data] = 1
-                    directed_gt[cmp_data] = 1
-                for ref in self._id_table.get_all(sorted_ref_ids):
-                    if not hasattr(ref, "target_cluster_id"):
-                        continue
-                    cmp_data = (ref.target.id, ref.id)
-                    undirected_gt[cmp_data] = 1
-                    directed_gt[cmp_data] = 2
-
-            return self._id_table, cluster_gt, directed_gt, undirected_gt
+            results = {}
+            for alpha in self._alphas:
+                bridges = ambiguous_refs[alpha]
+                cluster_gt, directed_gt, undirected_gt = self._build_ground_truth(
+                    bridges, alpha
+                )
+                results[alpha] = (
+                    list(bridges.values()),
+                    cluster_gt,
+                    directed_gt,
+                    undirected_gt,
+                )
+            return results
         finally:
             self._progress.stop()
 
@@ -1159,66 +1208,73 @@ def _generate_amb_datasets(
     data: CsvBenchmarkData, ambiguity_generator: AmbiguityGenerator, output_dir: Path
 ):
     """Generate two datasets containing ambiguous bridge records."""
-    id_table, cluster_gt, directed_gt, undirected_gt = ambiguity_generator()
-    table_ = [
-        {
-            "id": ref.id.label,
-            "source": str(ref.id.source),
-            **{
-                k: v
-                for k, v in ref.as_dict().items()
-                if k not in {"source", "target", "target_cluster_id"}
-            },
+    results = ambiguity_generator()
+    for alpha, (bridges, cluster_gt, directed_gt, undirected_gt) in results.items():
+        tag = f"a{round(alpha * 100):03d}"
+        table_ = [
+            {
+                "id": ref.id.label,
+                "source": str(ref.id.source),
+                **{
+                    k: v
+                    for k, v in ref.as_dict().items()
+                    if k not in AmbiguityGenerator._RESERVED_REF_PROPERTIES
+                },
+            }
+            for ref in [*data.id_table, *bridges]
+        ]
+        data_df = pl.DataFrame(table_)
+        clusters_df = pl.DataFrame(
+            [
+                {"id": ref_id.label, "source": ref_id.source, "cluster_id": cluster_id}
+                for cluster_id, ref_ids in sorted(cluster_gt.items())
+                for ref_id in sorted(ref_ids, key=_ref_id_sort_key)
+            ]
+        )
+        directed_df = pl.DataFrame(
+            [
+                {
+                    "left_id": left_id.label,
+                    "left_source": left_id.source,
+                    "right_id": right_id.label,
+                    "right_source": right_id.source,
+                    "label": c,
+                }
+                for (left_id, right_id), c in directed_gt.items()
+            ]
+        )
+        undirected_df = pl.DataFrame(
+            [
+                {
+                    "left_id": left_id.label,
+                    "left_source": left_id.source,
+                    "right_id": right_id.label,
+                    "right_source": right_id.source,
+                    "label": c,
+                }
+                for (left_id, right_id), c in undirected_gt.items()
+            ]
+        )
+        directed_undirected = {
+            f"amb_{data.name}_{tag}": undirected_df,
+            f"amb_{data.name}_{tag}_dir": directed_df,
         }
-        for ref in id_table
-    ]
-    data_df = pl.DataFrame(table_)
-    clusters_df = pl.DataFrame(
-        [
-            {"id": ref_id.label, "source": ref_id.source, "cluster_id": cluster_id}
-            for cluster_id, ref_ids in sorted(cluster_gt.items())
-            for ref_id in sorted(ref_ids, key=_ref_id_sort_key)
-        ]
-    )
-    directed_df = pl.DataFrame(
-        [
-            {
-                "left_id": left_id.label,
-                "left_source": left_id.source,
-                "right_id": right_id.label,
-                "right_source": right_id.source,
-                "label": c,
-            }
-            for (left_id, right_id), c in directed_gt.items()
-        ]
-    )
-    undirected_df = pl.DataFrame(
-        [
-            {
-                "left_id": left_id.label,
-                "left_source": left_id.source,
-                "right_id": right_id.label,
-                "right_source": right_id.source,
-                "label": c,
-            }
-            for (left_id, right_id), c in undirected_gt.items()
-        ]
-    )
-    directed_undirected = {
-        f"amb_{data.name}": undirected_df,
-        f"amb_{data.name}_dir": directed_df,
-    }
 
-    for output_dataset_name, mapping_df in directed_undirected.items():
-        dataset_output_path = output_dir / output_dataset_name
-        dataset_output_path.mkdir(parents=True, exist_ok=True)
-        file_map = {
-            f"{output_dataset_name}_ids.csv": data_df,
-            f"{output_dataset_name}_mapping.csv": mapping_df,
-            f"{output_dataset_name}_cluster_mapping.csv": clusters_df,
-        }
-        for name, df in file_map.items():
-            df.write_csv(dataset_output_path / name, include_header=True)
+        for output_dataset_name, mapping_df in directed_undirected.items():
+            dataset_output_path = output_dir / output_dataset_name
+            dataset_output_path.mkdir(parents=True, exist_ok=True)
+            file_map = {
+                f"{output_dataset_name}_ids.csv": data_df,
+                f"{output_dataset_name}_mapping.csv": mapping_df,
+                f"{output_dataset_name}_cluster_mapping.csv": clusters_df,
+            }
+            for name, df in file_map.items():
+                df.write_csv(dataset_output_path / name, include_header=True)
+
+    if ambiguity_generator.bridge_log:
+        pl.DataFrame(ambiguity_generator.bridge_log).write_csv(
+            output_dir / f"amb_{data.name}_bridge_log.csv", include_header=True
+        )
 
 
 @matchescu.command("ambiguity-generator")
@@ -1297,6 +1353,22 @@ def _generate_amb_datasets(
     default=None,
     help="Comma-separated secondary features to copy from the home representative.",
 )
+@click.option(
+    "--alphas",
+    "alphas",
+    type=click.STRING,
+    default="0.5",
+    required=False,
+    help="Comma-separated alpha weights (in (0, 1)) for the harmonic-mean pick",
+)
+@click.option(
+    "--target-floor",
+    "target_floor",
+    type=click.FLOAT,
+    default=0.0,
+    required=False,
+    help="Floor on sim_target, as a fraction of the symmetric-pick sim_target (in [0, 1])",
+)
 @click.pass_context
 def main(
     ctx: Context,
@@ -1309,6 +1381,8 @@ def main(
     gmm_restarts: int,
     plot_dir: str | PathLike,
     secondary_features: str | None,
+    alphas: str,
+    target_floor: float,
 ):
     """Introduce ambiguous data into existing dataset."""
     root_dir = get_options(ctx).root_dir
@@ -1325,6 +1399,9 @@ def main(
             for feature in secondary_features.split(",")
             if feature.strip()
         ]
+    alphas_tuple = tuple(
+        float(part.strip()) for part in alphas.split(",") if part.strip()
+    )
 
     analysis_frames: list[pl.DataFrame] = []
     analysis_fits: list[GmmFit] = []
@@ -1341,6 +1418,8 @@ def main(
             input_cfg.ambiguity_targets,
             secondary_features=cli_secondary_features or input_cfg.secondary_features,
             min_ambiguity=input_cfg.min_ambiguity,
+            alphas=alphas_tuple,
+            target_floor=target_floor,
         )
 
         # in analysis mode, only compute the optimal cutoff point at which
