@@ -52,6 +52,11 @@ def _ref_id_sort_key(ref_id: RefId):
     return (ref_id.source, ref_id.label)
 
 
+def _orient(a: RefId, b: RefId, bridges: set[RefId]) -> ComparisonData:
+    """Bridges always on the right, matching the canonical (target, bridge) key."""
+    return (b, a) if a in bridges and b not in bridges else (a, b)
+
+
 @dataclass
 class GmmFit:
     """Parameters of the two-component GMM fit used to derive the ambiguity threshold.
@@ -623,7 +628,7 @@ class AmbiguityGenerator:
                 "target": target,
                 "target_cluster_id": target_cluster_id,
             }
-            for k in all_keys:
+            for k in sorted(all_keys):
                 if k in self._secondary_features:
                     home_value = self._copy_secondary_feature(
                         source_dict, target_dict, k, secondary_counts[k]
@@ -674,29 +679,38 @@ class AmbiguityGenerator:
         dict[tuple[RefId, RefId], int],
     ]:
         self._progress.start()
-        cluster_reps = self._get_cluster_representatives()
-        closest_reps = self._find_closest_rep(cluster_reps)
-        ambiguous_refs = self._generate_ambiguous_references(cluster_reps, closest_reps)
+        try:
+            cluster_reps = self._get_cluster_representatives()
+            closest_reps = self._find_closest_rep(cluster_reps)
+            ambiguous_refs = self._generate_ambiguous_references(
+                cluster_reps, closest_reps
+            )
 
-        cluster_gt: dict[int, set[RefId]] = self._cluster_id_map.copy()
-        for cluster_id, ref in ambiguous_refs.items():
-            cluster_gt[cluster_id].add(ref)
+            cluster_gt: dict[int, set[RefId]] = {
+                cid: set(refs) for cid, refs in self._cluster_id_map.items()
+            }
+            for cluster_id, ref in ambiguous_refs.items():
+                cluster_gt[cluster_id].add(ref)
 
-        directed_gt: dict[ComparisonData, int] = {}
-        undirected_gt: dict[ComparisonData, int] = {}
-        for cluster_id, ref_ids in cluster_gt.items():
-            for cmp_data in combinations(ref_ids, 2):
-                undirected_gt[cmp_data] = 1
-                directed_gt[cmp_data] = 1
-            for ref in self._id_table.get_all(ref_ids):
-                if not hasattr(ref, "target_cluster_id"):
-                    continue
-                fwd_comparison = (ref.id, ref.target.id)
-                rev_comparison = (ref.target.id, ref.id)
-                undirected_gt[fwd_comparison] = 1
-                directed_gt[rev_comparison] = 2
+            directed_gt: dict[ComparisonData, int] = {}
+            undirected_gt: dict[ComparisonData, int] = {}
+            bridge_ids = set(ambiguous_refs.values())
+            for cluster_id, ref_ids in cluster_gt.items():
+                sorted_ref_ids = list(sorted(ref_ids, key=_ref_id_sort_key))
+                for left, right in combinations(sorted_ref_ids, 2):
+                    cmp_data = _orient(left, right, bridge_ids)
+                    undirected_gt[cmp_data] = 1
+                    directed_gt[cmp_data] = 1
+                for ref in self._id_table.get_all(sorted_ref_ids):
+                    if not hasattr(ref, "target_cluster_id"):
+                        continue
+                    cmp_data = (ref.target.id, ref.id)
+                    undirected_gt[cmp_data] = 1
+                    directed_gt[cmp_data] = 2
 
-        return self._id_table, cluster_gt, directed_gt, undirected_gt
+            return self._id_table, cluster_gt, directed_gt, undirected_gt
+        finally:
+            self._progress.stop()
 
 
 def _compute_drops(bridge_counts: list[float]) -> list[tuple[int, int, float]]:
@@ -1108,8 +1122,8 @@ def _generate_amb_datasets(
     clusters_df = pl.DataFrame(
         [
             {"id": ref_id.label, "source": ref_id.source, "cluster_id": cluster_id}
-            for cluster_id, ref_ids in cluster_gt.items()
-            for ref_id in ref_ids
+            for cluster_id, ref_ids in sorted(cluster_gt.items())
+            for ref_id in sorted(ref_ids, key=_ref_id_sort_key)
         ]
     )
     directed_df = pl.DataFrame(
