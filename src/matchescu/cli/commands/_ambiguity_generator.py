@@ -113,11 +113,14 @@ class AmbiguityGenerator:
         min_ambiguity: float | None = None,
         alphas: tuple[float, ...] = (0.5,),
         target_floor: float = 0.0,
+        target_links: int = 1,
     ) -> None:
         if not all(0 < alpha < 1 for alpha in alphas):
             raise ValueError("alphas must be in (0, 1)")
         if not 0 <= target_floor <= 1:
             raise ValueError("target_floor must be in [0, 1]")
+        if target_links < 1:
+            raise ValueError("target_links must be >= 1")
         self._mapping_gt = mapping_gt
         self._id_table = id_table
         self._cluster_count = len(clusters)
@@ -146,7 +149,10 @@ class AmbiguityGenerator:
         self._bridge_terms = self._build_bridge_terms()
         self._alphas = tuple(sorted(set(alphas)))
         self._target_floor = target_floor
+        self._target_links = target_links
+        self._cluster_rankings: dict[int, list[RefId]] = {}
         self.bridge_log: list[dict] = []
+        self.link_log: list[dict] = []
 
     def _validate_secondary_features(self) -> None:
         if self._secondary_features & self._target_properties:
@@ -337,6 +343,7 @@ class AmbiguityGenerator:
 
     def _get_cluster_representatives(self):
         cluster_reps = {}
+        self._cluster_rankings = {}
         for cluster_id, ref_ids in self._cluster_id_map.items():
             self._progress.update(
                 self._main_task, description=f"nominating [{cluster_id}] cluster rep"
@@ -344,14 +351,15 @@ class AmbiguityGenerator:
             candidates = sorted(ref_ids, key=_ref_id_sort_key)
             refs = list(self._id_table.get_all(candidates))
             rep_idx = 0
+            mean_ambiguities = None
             if len(refs) > 1:
                 mean_ambiguities = []
                 for i, ref in enumerate(refs):
                     others = refs[:i] + refs[i + 1 :]
+                    n = len(others)
                     ambiguity_scores = [self._ambiguity_score(ref, x) for x in others]
-                    mean_ambiguities.append(
-                        sum(ambiguity_scores) / len(ambiguity_scores)
-                    )
+                    mean_score = sum(ambiguity_scores) / n if n > 0 else 0
+                    mean_ambiguities.append(mean_score)
                 max_ambiguity = 0
                 rep_idx = 0
                 for i, ambiguity in enumerate(mean_ambiguities):
@@ -359,8 +367,27 @@ class AmbiguityGenerator:
                         max_ambiguity = ambiguity
                         rep_idx = i
             cluster_reps[cluster_id] = candidates[rep_idx]
+            self._cluster_rankings[cluster_id] = self._ranked_by_amb(
+                candidates, rep_idx, mean_ambiguities
+            )
             self._progress.advance(self._main_task)
         return cluster_reps
+
+    @staticmethod
+    def _ranked_by_amb(clust_members, rep_idx, mean_ambiguities):
+        ranking = [clust_members[rep_idx]]
+        if mean_ambiguities is None:
+            return ranking  # no mean ambiguities -> cluster rep only
+        others = sorted(
+            (
+                (mean_ambiguities[i], clust_members[i])
+                for i in range(len(clust_members))
+                if i != rep_idx
+            ),
+            key=lambda tpl: -tpl[0],
+        )
+        ranking.extend(ref_id for _, ref_id in others)
+        return ranking
 
     def _find_closest_rep(self, cluster_reps):
         cluster_refs = {
@@ -769,9 +796,26 @@ class AmbiguityGenerator:
                 undirected_gt[cmp_data] = 1
                 directed_gt[cmp_data] = 1
             if (bridge := bridges.get(cluster_id)) is not None:
-                cmp_data = (bridge.target.id, bridge.id)
-                undirected_gt[cmp_data] = 1
-                directed_gt[cmp_data] = 2
+                for rank, t_id in enumerate(
+                    self._cluster_rankings[bridge.target_cluster_id][
+                        : self._target_links
+                    ]
+                ):
+                    cmp_data = (t_id, bridge.id)
+                    undirected_gt[cmp_data] = 1
+                    directed_gt[cmp_data] = 2
+                    self.link_log.append(
+                        {
+                            "alpha": alpha,
+                            "bridge_label": bridge.id.label,
+                            "target_cluster": bridge.target_cluster_id,
+                            "target_label": t_id.label,
+                            "rank": rank,
+                            "ambiguity": self._ambiguity_score(
+                                bridge, self._id_table.get(t_id)
+                            ),
+                        }
+                    )
         return cluster_gt, directed_gt, undirected_gt
 
     def best_pairing_scores(self) -> list[float]:
@@ -1209,6 +1253,11 @@ def _generate_amb_datasets(
 ):
     """Generate two datasets containing ambiguous bridge records."""
     results = ambiguity_generator()
+    k_suffix = (
+        f"_k{ambiguity_generator._target_links}"
+        if ambiguity_generator._target_links > 1
+        else ""
+    )
     for alpha, (bridges, cluster_gt, directed_gt, undirected_gt) in results.items():
         tag = f"a{round(alpha * 100):03d}"
         table_ = [
@@ -1256,8 +1305,8 @@ def _generate_amb_datasets(
             ]
         )
         directed_undirected = {
-            f"amb_{data.name}_{tag}": undirected_df,
-            f"amb_{data.name}_{tag}_dir": directed_df,
+            f"amb_{data.name}_{tag}{k_suffix}": undirected_df,
+            f"amb_{data.name}_{tag}{k_suffix}_dir": directed_df,
         }
 
         for output_dataset_name, mapping_df in directed_undirected.items():
@@ -1274,6 +1323,10 @@ def _generate_amb_datasets(
     if ambiguity_generator.bridge_log:
         pl.DataFrame(ambiguity_generator.bridge_log).write_csv(
             output_dir / f"amb_{data.name}_bridge_log.csv", include_header=True
+        )
+    if ambiguity_generator.link_log:
+        pl.DataFrame(ambiguity_generator.link_log).write_csv(
+            output_dir / f"amb_{data.name}{k_suffix}_link_log.csv", include_header=True
         )
 
 
@@ -1369,6 +1422,14 @@ def _generate_amb_datasets(
     required=False,
     help="Floor on sim_target, as a fraction of the symmetric-pick sim_target (in [0, 1])",
 )
+@click.option(
+    "--target-links",
+    "target_links",
+    type=click.INT,
+    default=1,
+    required=False,
+    help="How many links each bridge gets inside its target cluster",
+)
 @click.pass_context
 def main(
     ctx: Context,
@@ -1383,6 +1444,7 @@ def main(
     secondary_features: str | None,
     alphas: str,
     target_floor: float,
+    target_links: int,
 ):
     """Introduce ambiguous data into existing dataset."""
     root_dir = get_options(ctx).root_dir
@@ -1420,6 +1482,7 @@ def main(
             min_ambiguity=input_cfg.min_ambiguity,
             alphas=alphas_tuple,
             target_floor=target_floor,
+            target_links=target_links,
         )
 
         # in analysis mode, only compute the optimal cutoff point at which
