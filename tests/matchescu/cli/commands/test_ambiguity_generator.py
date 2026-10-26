@@ -6,6 +6,17 @@ _HOME_CLUSTER_ID = 1
 _PROX_CLUSTER_ID = 2
 
 
+def _run(_sut):
+    """Run the generator and return (bridge, cluster_gt, directed_gt, undirected_gt).
+
+    With the fixtures here there is exactly one pairing, hence one bridge, and the
+    default configuration has a single alpha (0.5). Bridges are returned by the
+    generator, not stored in the id table.
+    """
+    bridges, cluster_gt, directed_gt, undirected_gt = _sut()[0.5]
+    return bridges[0], cluster_gt, directed_gt, undirected_gt
+
+
 @pytest.fixture
 def make_generator():
     def _make(id_table, clusters, **kwargs):
@@ -19,8 +30,7 @@ def test_bridge_copies_home_secondary_value_when_values_differ(
     make_generator, id_table, clusters, bridge_ref_id
 ):
     _sut = make_generator(id_table, clusters, secondary_features=["year"])
-    _sut()
-    bridge = id_table.get(bridge_ref_id)
+    bridge, *_ = _run(_sut)
 
     assert bridge["year"] == "1990"
 
@@ -38,16 +48,16 @@ def test_bridge_synthesises_target_property_value(
     make_generator, id_table, clusters, bridge_ref_id
 ):
     _sut = make_generator(id_table, clusters, secondary_features=["year"])
-    _sut()
+    bridge, *_ = _run(_sut)
 
-    assert id_table.get(bridge_ref_id)["name"] not in ("John Doe", "Jane Doe")
+    assert bridge["name"] not in ("John Doe", "Jane Doe")
 
 
 def test_bridge_joined_to_home_cluster(
     make_generator, id_table, clusters, bridge_ref_id
 ):
     _sut = make_generator(id_table, clusters, secondary_features=["year"])
-    _, cluster_gt, _, _ = _sut()
+    _, cluster_gt, *_ = _run(_sut)
 
     assert bridge_ref_id in cluster_gt[_HOME_CLUSTER_ID]
 
@@ -56,8 +66,7 @@ def test_bridge_refers_to_target_and_proximal_cluster(
     make_generator, id_table, clusters, bridge_ref_id, prox_ref_id
 ):
     _sut = make_generator(id_table, clusters, secondary_features=["year"])
-    _sut()
-    bridge = id_table.get(bridge_ref_id)
+    bridge, *_ = _run(_sut)
 
     assert bridge["target"].id == prox_ref_id
     assert bridge["target_cluster_id"] == _PROX_CLUSTER_ID
@@ -67,8 +76,7 @@ def test_bridge_source_is_ambiguity_generator(
     make_generator, id_table, clusters, bridge_ref_id
 ):
     _sut = make_generator(id_table, clusters, secondary_features=["year"])
-    _sut()
-    bridge = id_table.get(bridge_ref_id)
+    bridge, *_ = _run(_sut)
 
     assert bridge.id.source == "ambiguity-generator"
 
@@ -77,7 +85,7 @@ def test_directed_gt_marks_target_to_bridge_as_directional(
     make_generator, id_table, clusters, bridge_ref_id, prox_ref_id
 ):
     _sut = make_generator(id_table, clusters, secondary_features=["year"])
-    _, _, directed_gt, _ = _sut()
+    _, _, directed_gt, _ = _run(_sut)
 
     assert directed_gt[(prox_ref_id, bridge_ref_id)] == 2
 
@@ -86,7 +94,7 @@ def test_undirected_gt_marks_target_to_bridge_as_match(
     make_generator, id_table, clusters, bridge_ref_id, prox_ref_id
 ):
     _sut = make_generator(id_table, clusters, secondary_features=["year"])
-    _, _, _, undirected_gt = _sut()
+    _, _, _, undirected_gt = _run(_sut)
     forward = (prox_ref_id, bridge_ref_id)
     reverse = (bridge_ref_id, prox_ref_id)
 
@@ -97,8 +105,7 @@ def test_secondary_features_absent_copies_empty_string(
     make_generator, id_table, clusters, bridge_ref_id
 ):
     _sut = make_generator(id_table, clusters)
-    _sut()
-    bridge = id_table.get(bridge_ref_id)
+    bridge, *_ = _run(_sut)
 
     assert bridge["year"] == ""
 
@@ -136,8 +143,7 @@ def test_missing_home_secondary_value_warns_and_skips(
     )
     _sut = make_generator(id_table, clusters, secondary_features=["year"])
     with pytest.warns(UserWarning, match="year"):
-        _sut()
-    bridge = id_table.get(bridge_ref_id)
+        bridge, *_ = _run(_sut)
 
     assert "year" not in bridge.as_dict()
 
@@ -150,8 +156,7 @@ def test_equal_home_secondary_value_copied_verbatim(
         {"name": "Jane Doe", "year": "1990", "city": "Y"},
     )
     _sut = make_generator(id_table, clusters, secondary_features=["year"])
-    _sut()
-    bridge = id_table.get(bridge_ref_id)
+    bridge, *_ = _run(_sut)
 
     assert bridge["year"] == "1990"
 
