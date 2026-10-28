@@ -22,6 +22,7 @@ from matchescu.cli.runtime import get_options, make_absolute_path
 
 from ._bridge_labels import BridgeLabels, BridgeLabelStrategy
 from ._pairing import GreedyPairing, Pairing, PairingStrategy
+from ._ref_ids import ref_id_sort_key
 from ._shared import (
     load_ambiguity_config,
     load_benchmark_data,
@@ -33,7 +34,6 @@ from ._variant import (
     RESERVED_BRIDGE_PROPERTIES,
     AmbiguousVariant,
     ComparisonData,
-    ref_id_sort_key,
 )
 from ._writer import VariantNaming, VariantWriter
 

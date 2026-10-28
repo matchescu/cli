@@ -13,11 +13,6 @@ RESERVED_BRIDGE_PROPERTIES: frozenset[str] = frozenset(
 """Bridge properties documenting the synthesis rather than the record."""
 
 
-def ref_id_sort_key(ref_id: RefId) -> tuple:
-    """Sort key ordering reference ids by source, then label."""
-    return (ref_id.source, ref_id.label)
-
-
 @dataclass(frozen=True)
 class AmbiguousVariant:
     """One alpha variant of an ambiguous dataset, as produced in a single run.

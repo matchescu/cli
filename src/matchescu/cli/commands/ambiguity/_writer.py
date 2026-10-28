@@ -8,11 +8,11 @@ from matchescu.reference_store.id_table import IdTable
 from matchescu.typing import EntityReference
 from matchescu.typing import EntityReferenceIdentifier as RefId
 
+from ._ref_ids import ref_id_sort_key
 from ._variant import (
     RESERVED_BRIDGE_PROPERTIES,
     AmbiguousVariant,
     ComparisonData,
-    ref_id_sort_key,
 )
 
 
