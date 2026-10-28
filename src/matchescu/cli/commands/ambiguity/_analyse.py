@@ -13,7 +13,7 @@ from polars import DataFrame
 from matchescu.cli.runtime import get_options
 
 from ._alpha_sweep import AlphaSweep, AlphaSweepResult
-from ._config import ThresholdAnalysisConfig
+from ._config import AmbiguityConfig, ThresholdAnalysisConfig
 from ._generate import AmbiguityGenerator
 from ._gmm_fit import GmmFit, InsufficientScoresError
 from ._plotting import (
@@ -22,6 +22,7 @@ from ._plotting import (
     render_threshold_plot,
 )
 from ._shared import load_ambiguity_config, load_benchmark_data
+from .profiling import ProfileOptions
 from .selection import AlphaSelector, SelectionSettings
 
 _DATASET_DISPLAY_NAMES: dict[str, str] = {
@@ -103,12 +104,31 @@ def analyse_threshold(
     )
 
 
+def _alpha_sweeps(config: AmbiguityConfig, options: ProfileOptions) -> list[AlphaSweep]:
+    """Build one alpha sweep per input dataset.
+
+    :param config: configuration file; each entry's analysis settings decide
+        the sweep of that entry.
+    :param options: settings of every profile.
+    :returns: one sweep per entry, in configuration order.
+    :raises ValueError: when a criterion needs a profile option that
+        `options` switches off.
+    """
+    return [
+        AlphaSweep(
+            AlphaSelector(config.analysis_for(entry).selection.to_selection_settings()),
+            options,
+        )
+        for entry in config.input_data
+    ]
+
+
 def build_methodology_rows(
     analysis_frames: list[DataFrame],
     analysis_fits: list[GmmFit],
     analysis_bridges: list[int],
     analysis_sweeps: list[AlphaSweepResult],
-    selection_settings: SelectionSettings,
+    analysis_selections: list[SelectionSettings],
 ) -> list[dict[Any, Any]]:
     """Summarise every analysed dataset into methodology report rows.
 
@@ -129,14 +149,17 @@ def build_methodology_rows(
         produce at the fitted threshold, as returned by `analyse_threshold`.
     :param analysis_sweeps: per-dataset alpha sweeps supplying the chosen
         alpha and the bridge component columns.
-    :param selection_settings: parameters of the alpha choice, identical for
-        every dataset.
+    :param analysis_selections: per-dataset parameters of the alpha choice.
     :returns: one dict per dataset, in collection order; an empty input yields
         an empty list.
     """
     rows: list[dict[Any, Any]] = []
-    for df, fit, bridge_count_at_theta, sweep in zip(
-        analysis_frames, analysis_fits, analysis_bridges, analysis_sweeps
+    for df, fit, bridge_count_at_theta, sweep, selection in zip(
+        analysis_frames,
+        analysis_fits,
+        analysis_bridges,
+        analysis_sweeps,
+        analysis_selections,
     ):
         rows.append(
             {
@@ -154,7 +177,7 @@ def build_methodology_rows(
                 "sigma_superficial": round(fit.sigma_superficial, 2),
                 "pi_superficial": round(fit.pi_superficial, 2),
                 "boundary_type": fit.boundary_type,
-                **selection_settings.as_row(),
+                **selection.as_row(),
                 **_rounded(sweep.summary()),
             }
         )
@@ -251,11 +274,8 @@ def analyse_ambiguity(
     """
     root_dir = get_options(ctx).root_dir
     config = load_ambiguity_config(config_file, root_dir)
-    selection_settings = config.analysis.selection.to_selection_settings()
     try:
-        alpha_sweep = AlphaSweep(
-            AlphaSelector(selection_settings), config.profiling.to_profile_options()
-        )
+        alpha_sweeps = _alpha_sweeps(config, config.profiling.to_profile_options())
     except ValueError as err:
         raise click.UsageError(str(err)) from err
 
@@ -264,13 +284,15 @@ def analyse_ambiguity(
     analysis_scores: list[list[float]] = []
     analysis_bridges: list[int] = []
     analysis_sweeps: list[AlphaSweepResult] = []
-    for input_cfg in config.input_data:
+    analysis_selections: list[SelectionSettings] = []
+    for input_cfg, alpha_sweep in zip(config.input_data, alpha_sweeps):
         print("processing", input_cfg.dataset.directory)
         data = load_benchmark_data(input_cfg, root_dir)
         generator = AmbiguityGenerator.from_config(input_cfg, data)
+        analysis = config.analysis_for(input_cfg)
         try:
             sweep_df, gmm_fit, scores, bridges_at_theta = analyse_threshold(
-                config.analysis.threshold, data, generator
+                analysis.threshold, data, generator
             )
         except InsufficientScoresError as err:
             warnings.warn(f"skipping {data.name}: {err}")
@@ -279,6 +301,7 @@ def analyse_ambiguity(
         analysis_fits.append(gmm_fit)
         analysis_scores.append(scores)
         analysis_bridges.append(bridges_at_theta)
+        analysis_selections.append(analysis.selection.to_selection_settings())
         analysis_sweeps.append(
             alpha_sweep.run(generator, data.id_table, sweep_df["dataset"][0])
         )
@@ -289,13 +312,17 @@ def analyse_ambiguity(
 
     plot_path = Path(plot_dir)
     plot_path.mkdir(parents=True, exist_ok=True)
-    for df, fit, scores, sweep in zip(
-        analysis_frames, analysis_fits, analysis_scores, analysis_sweeps
+    for df, fit, scores, selection, sweep in zip(
+        analysis_frames,
+        analysis_fits,
+        analysis_scores,
+        analysis_selections,
+        analysis_sweeps,
     ):
         name = df["dataset"][0]
         render_gmm_fit_plot(scores, fit, plot_path / f"gmm_fit_{name}.png")
         render_alpha_sweep_plot(
-            sweep, selection_settings.bounds, plot_path / f"alpha_sweep_{name}.png"
+            sweep, selection.bounds, plot_path / f"alpha_sweep_{name}.png"
         )
 
     methodology_rows = build_methodology_rows(
@@ -303,7 +330,7 @@ def analyse_ambiguity(
         analysis_fits,
         analysis_bridges,
         analysis_sweeps,
-        selection_settings,
+        analysis_selections,
     )
     alpha_sweep_rows = [row for sweep in analysis_sweeps for row in sweep.rows]
     write_report(analysis_frames, methodology_rows, alpha_sweep_rows, plot_path)

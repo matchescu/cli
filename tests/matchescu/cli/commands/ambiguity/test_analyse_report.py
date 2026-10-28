@@ -3,10 +3,13 @@ import pytest
 
 from matchescu.cli.commands.ambiguity._alpha_sweep import AlphaSweepResult
 from matchescu.cli.commands.ambiguity._analyse import (
+    _alpha_sweeps,
     build_methodology_rows,
     write_report,
 )
+from matchescu.cli.commands.ambiguity._config import AmbiguityConfig
 from matchescu.cli.commands.ambiguity._gmm_fit import GmmFit
+from matchescu.cli.commands.ambiguity.profiling import ProfileOptions
 from matchescu.cli.commands.ambiguity.selection import (
     AlphaChoice,
     SelectionSettings,
@@ -14,6 +17,30 @@ from matchescu.cli.commands.ambiguity.selection import (
 )
 
 SETTINGS = SelectionSettings(SeparabilityBounds(0.3, 0.85), "gmm-balance", 0.4)
+
+DATASET = {
+    "type": "csv",
+    "directory": "./some-dataset",
+    "sources": [{"fileName": "ids.csv", "idCol": "id"}],
+    "pairwiseMapping": {"fileName": "mapping.csv", "hasHeader": False},
+}
+
+
+def test_alpha_sweeps_raise_when_dataset_criterion_option_is_off():
+    config = AmbiguityConfig.model_validate(
+        {
+            "inputData": [
+                {
+                    "dataset": DATASET,
+                    "alphas": [0.5],
+                    "analysis": {"selection": {"criterion": "surface-gap"}},
+                }
+            ]
+        }
+    )
+
+    with pytest.raises(ValueError, match="surface_baseline"):
+        _alpha_sweeps(config, ProfileOptions())
 
 
 @pytest.fixture
@@ -49,7 +76,7 @@ def sweep():
 @pytest.fixture
 def row(threshold_frame, fit, sweep):
     (methodology_row,) = build_methodology_rows(
-        [threshold_frame], [fit], [3], [sweep], SETTINGS
+        [threshold_frame], [fit], [3], [sweep], [SETTINGS]
     )
     return methodology_row
 
@@ -74,6 +101,21 @@ def test_methodology_row_value(row, column, expected):
 
 def test_methodology_row_keeps_missing_component_values_empty(row):
     assert row["largest_bridge_component_clusters"] is None
+
+
+def test_methodology_rows_use_each_dataset_selection(threshold_frame, fit, sweep):
+    other_settings = SelectionSettings(SeparabilityBounds(0.3, 0.85), "smallest", 0.4)
+    other_frame = threshold_frame.with_columns(pl.lit("other").alias("dataset"))
+
+    rows = build_methodology_rows(
+        [threshold_frame, other_frame],
+        [fit, fit],
+        [3, 3],
+        [sweep, sweep],
+        [SETTINGS, other_settings],
+    )
+
+    assert [row["alpha_criterion"] for row in rows] == ["gmm-balance", "smallest"]
 
 
 def test_report_writes_alpha_sweep_rows(threshold_frame, row, sweep, tmp_path):

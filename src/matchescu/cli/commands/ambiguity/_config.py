@@ -9,31 +9,6 @@ from .selection import SelectionSettings, SeparabilityBounds
 type Alpha = Annotated[float, Field(gt=0, lt=1)]
 
 
-class AmbiguityDataConfig(ConfigModel):
-    """Settings of one input dataset.
-
-    :ivar dataset: where the dataset lives and how its files are laid out.
-    :ivar ambiguity_targets: properties that receive synthesised values.
-    :ivar secondary_features: properties copied from the home
-        representative to every bridge.
-    :ivar min_ambiguity: minimum pairing score of a bridge; ``None``
-        disables the filter.
-    :ivar alphas: blend weights, each in (0, 1). ``analyse`` searches them;
-        ``generate`` writes one variant per weight.
-    :ivar target_floor: minimum target similarity, as a fraction of the
-        symmetric pick's target similarity, in [0, 1].
-    :ivar target_links: links each bridge gets inside its target cluster.
-    """
-
-    dataset: AnyDatasetConfig
-    ambiguity_targets: list[str] | None = None
-    secondary_features: list[str] | None = None
-    min_ambiguity: float | None = None
-    alphas: list[Alpha] = Field(min_length=1)
-    target_floor: float = Field(default=0.0, ge=0, le=1)
-    target_links: int = Field(default=1, ge=1)
-
-
 class ProfilingConfig(ConfigModel):
     """Settings of every dataset profile, shared by all datasets.
 
@@ -68,7 +43,7 @@ class ProfilingConfig(ConfigModel):
 
 
 class SelectionConfig(ConfigModel):
-    """How ``analyse`` chooses an alpha, shared by all datasets.
+    """How ``analyse`` chooses an alpha, overridable per dataset.
 
     Values are validated by building the selection settings once, so a bad
     configuration fails while it loads.
@@ -117,20 +92,64 @@ class ThresholdAnalysisConfig(ConfigModel):
 
 
 class AnalysisConfig(ConfigModel):
-    """Settings only ``analyse`` reads."""
+    """Settings only ``analyse`` reads.
+
+    Top-level values are the default for every dataset; an entry may replace
+    the whole block.
+
+    :ivar selection: how an alpha is chosen from the sweep.
+    :ivar threshold: the minimum-ambiguity sweep and mixture fit.
+    """
 
     selection: SelectionConfig = Field(default_factory=SelectionConfig)
     threshold: ThresholdAnalysisConfig = Field(default_factory=ThresholdAnalysisConfig)
+
+
+class AmbiguityDataConfig(ConfigModel):
+    """Settings of one input dataset.
+
+    :ivar dataset: where the dataset lives and how its files are laid out.
+    :ivar ambiguity_targets: properties that receive synthesised values.
+    :ivar secondary_features: properties copied from the home
+        representative to every bridge.
+    :ivar min_ambiguity: minimum pairing score of a bridge; ``None``
+        disables the filter.
+    :ivar alphas: blend weights, each in (0, 1). ``analyse`` searches them;
+        ``generate`` writes one variant per weight.
+    :ivar target_floor: minimum target similarity, as a fraction of the
+        symmetric pick's target similarity, in [0, 1].
+    :ivar target_links: links each bridge gets inside its target cluster.
+    :ivar analysis: analysis settings of this dataset; ``None`` falls back to
+        the top-level block.
+    """
+
+    dataset: AnyDatasetConfig
+    ambiguity_targets: list[str] | None = None
+    secondary_features: list[str] | None = None
+    min_ambiguity: float | None = None
+    alphas: list[Alpha] = Field(min_length=1)
+    target_floor: float = Field(default=0.0, ge=0, le=1)
+    target_links: int = Field(default=1, ge=1)
+    analysis: AnalysisConfig | None = None
 
 
 class AmbiguityConfig(ConfigModel):
     """Configuration file of the ``ambiguity`` commands.
 
     :ivar profiling: profile settings shared by every dataset.
-    :ivar analysis: settings only ``analyse`` reads.
+    :ivar analysis: default analysis settings; an entry may replace them.
     :ivar input_data: one entry per input dataset.
     """
 
     profiling: ProfilingConfig = Field(default_factory=ProfilingConfig)
     analysis: AnalysisConfig = Field(default_factory=AnalysisConfig)
     input_data: list[AmbiguityDataConfig]
+
+    def analysis_for(self, entry: AmbiguityDataConfig) -> AnalysisConfig:
+        """Return the analysis settings of one dataset.
+
+        :param entry: input dataset whose settings are resolved.
+        :returns: the entry's own block when present, the top-level block
+            otherwise.
+        """
+        return entry.analysis or self.analysis

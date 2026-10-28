@@ -192,6 +192,54 @@ def test_invalid_selection_raises(selection):
         SelectionConfig.model_validate(selection)
 
 
+def test_dataset_analysis_defaults_to_none_when_absent(make_entry):
+    assert make_entry().analysis is None
+
+
+def test_dataset_analysis_parses_from_entry(make_entry):
+    sut = make_entry(analysis={"threshold": {"stepCount": 3}})
+
+    assert sut.analysis.threshold.step_count == 3
+
+
+def test_dataset_analysis_without_selection_uses_default_selection(make_entry):
+    sut = make_entry(analysis={"threshold": {"stepCount": 3}})
+
+    assert sut.analysis.selection == SelectionConfig()
+
+
+def test_analysis_for_returns_dataset_node_when_present():
+    sut = AmbiguityConfig.model_validate(
+        {
+            "inputData": [
+                {
+                    "dataset": DATASET,
+                    "alphas": [0.65],
+                    "analysis": {"selection": {"criterion": "gmm-balance"}},
+                }
+            ]
+        }
+    )
+
+    assert sut.analysis_for(sut.input_data[0]).selection.criterion == "gmm-balance"
+
+
+def test_analysis_for_returns_top_level_node_when_absent():
+    sut = AmbiguityConfig.model_validate(
+        {
+            "analysis": {"selection": {"criterion": "gmm-balance"}},
+            "inputData": [{"dataset": DATASET, "alphas": [0.65]}],
+        }
+    )
+
+    assert sut.analysis_for(sut.input_data[0]).selection.criterion == "gmm-balance"
+
+
+def test_invalid_dataset_analysis_raises(make_entry):
+    with pytest.raises(ValidationError):
+        make_entry(analysis={"selection": {"criterion": "largest"}})
+
+
 def test_threshold_analysis_defaults():
     sut = AmbiguityConfig.model_validate({"inputData": []}).analysis.threshold
 

@@ -203,6 +203,7 @@ an `inputData` list with one entry per dataset. Only `inputData` is required.
 | `alphas`            | required | both    | One or more values in (0, 1). `analyse` searches them; `generate` writes one variant per value.                                                                       |
 | `targetFloor`       | `0.0`    | both    | In [0, 1]. See [Concepts](#concepts).                                                                                                                                 |
 | `targetLinks`       | `1`      | both    | One-way pairs per bridge, at least 1. Values above 1 add `_kN` to output names.                                                                                       |
+| `analysis`          | none     | analyse | Replaces the whole top-level `analysis` block for this dataset. Omitted sub-blocks take their defaults, not the top-level values.                                       |
 
 ### Profiling (`profiling`, all datasets)
 
@@ -219,7 +220,11 @@ extra parts are switched on here because they cost more time.
 | `negPosRatio`            | `4.0`       | Label-0 pairs sampled per positive pair. Greater than 0.                                |
 | `splitRatio`             | `[3, 1, 1]` | Train/valid/test sizes used to judge whether the largest bridge component fits a split. |
 
-### Analysis (`analysis`, all datasets, ignored by `generate`)
+### Analysis (`analysis`, default for all datasets, ignored by `generate`)
+
+An `inputData[]` entry may carry its own `analysis` block. When it does,
+that block replaces the top-level one for the dataset; when it does not,
+the top-level block applies.
 
 | Key                          | Default    | Meaning                                                                 |
 |------------------------------|------------|-------------------------------------------------------------------------|
