@@ -30,7 +30,7 @@ def _run(_sut):
 def make_generator():
     def _make(id_table, clusters, **kwargs):
         kwargs.setdefault("ambiguity_target_properties", ["name"])
-        return AmbiguityGenerator(id_table, {}, clusters, **kwargs)
+        return AmbiguityGenerator(id_table, clusters, **kwargs)
 
     return _make
 
@@ -142,7 +142,6 @@ def test_secondary_feature_overlapping_target_property_raises(id_table, clusters
     with pytest.raises(ValueError, match="overlap"):
         AmbiguityGenerator(
             id_table,
-            {},
             clusters,
             ambiguity_target_properties=["name"],
             secondary_features=["name"],
@@ -152,7 +151,7 @@ def test_secondary_feature_overlapping_target_property_raises(id_table, clusters
 @pytest.mark.parametrize("reserved", ["source", "target", "target_cluster_id"])
 def test_secondary_feature_with_reserved_name_raises(id_table, clusters, reserved):
     with pytest.raises(ValueError, match="reserved"):
-        AmbiguityGenerator(id_table, {}, clusters, secondary_features=[reserved])
+        AmbiguityGenerator(id_table, clusters, secondary_features=[reserved])
 
 
 @pytest.mark.parametrize(
@@ -311,7 +310,6 @@ def test_variant_link_log_records_target_link(
 def test_settings_report_effective_generation_parameters(id_table, clusters):
     _sut = AmbiguityGenerator(
         id_table,
-        {},
         clusters,
         ambiguity_target_properties=["name", "city"],
         secondary_features=["year"],
@@ -336,7 +334,7 @@ def test_settings_report_effective_generation_parameters(id_table, clusters):
 
 
 def test_settings_without_optional_parameters_use_defaults(id_table, clusters):
-    _sut = AmbiguityGenerator(id_table, {}, clusters)
+    _sut = AmbiguityGenerator(id_table, clusters)
 
     assert _sut.settings == GenerationSettings(
         dataset_name="",

@@ -32,7 +32,6 @@ def make_generator(id_table, clusters):
     def _make(alphas=(0.5, 0.8)):
         return AmbiguityGenerator(
             id_table,
-            {},
             clusters,
             ambiguity_target_properties=["name"],
             alphas=alphas,

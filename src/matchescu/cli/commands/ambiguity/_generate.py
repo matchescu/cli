@@ -15,7 +15,9 @@ from matchescu.typing import EntityReference
 from matchescu.typing import (
     EntityReferenceIdentifier as RefId,
 )
+from rapidfuzz.distance import Levenshtein
 from rich.progress import Progress
+from stopwords import get_stopwords
 
 from matchescu.cli.runtime import get_options, make_absolute_path
 
@@ -32,15 +34,6 @@ from ._variant import (
     AmbiguousVariant,
     ComparisonData,
 )
-
-try:
-    from rapidfuzz.distance import Levenshtein
-except ImportError:
-    try:
-        import Levenshtein
-    except ImportError:
-        Levenshtein = None
-
 
 TOP_N_BRIDGE_TERMS: int = 10
 
@@ -69,9 +62,6 @@ class AmbiguityGenerator:
 
     :param id_table: references of the input dataset; bridges are never
         stored here, so the id table stays bridge-free by construction.
-    :param mapping_gt: true-match mapping of the input dataset; accepted to
-        mirror the benchmark data interface, currently unused — the generator
-        derives ground truth from `clusters` instead.
     :param clusters: ground-truth clusters of the input dataset; they receive
         ids 1..N in a deterministic sort order, and a bridge's reserved
         `target_cluster_id` property holds one of these ids.
@@ -82,9 +72,6 @@ class AmbiguityGenerator:
     :param secondary_features: property names copied verbatim from the home
         representative to every bridge, giving bridges authoritative
         non-target information.
-    :param string_degradation_patterns: regex fragments removed before
-        comparing string values; ``None`` applies the house patterns covering
-        country names and business/academic suffixes.
     :param min_ambiguity: minimum pairing score for a bridge to be generated;
         ``None`` disables the filter entirely (the mode threshold analysis
         relies on).
@@ -114,34 +101,13 @@ class AmbiguityGenerator:
     """
 
     _SYMMETRIC_ALPHA: ClassVar[float] = 0.5
-    _DEFAULT_DEGRADATION_PATTERNS: ClassVar[list[str]] = [
-        r",\s*USA",
-        r",\s*US",
-        r",\s*United States",
-        r",\s*CA",
-        r",\s*California",
-        r",\s*NY",
-        r",\s*New York",
-        r",\s*Germany",
-        r",\s*France",
-        r",\s*Japan",
-        r"\s+Inc\.?",
-        r"\s+Corp\.?",
-        r"\s+Ltd\.?",
-        r"\s+University",
-        r"\s+Univ\.?",
-        r"\s+Research\s+Center",
-        r"\s+Lab(?:oratories)?",
-    ]
 
     def __init__(
         self,
         id_table: IdTable,
-        mapping_gt: dict[ComparisonData, int],
         clusters: frozenset[frozenset[RefId]],
         ambiguity_target_properties: list[str] | None = None,
         secondary_features: list[str] | None = None,
-        string_degradation_patterns: list[str] | None = None,
         min_ambiguity: float | None = None,
         alphas: tuple[float, ...] = (0.5,),
         target_floor: float = 0.0,
@@ -159,9 +125,7 @@ class AmbiguityGenerator:
             raise ValueError("target_links must be >= 1")
         if max_length_ratio is not None and max_length_ratio < 1:
             raise ValueError("max_length_ratio must be >= 1")
-        self._mapping_gt = mapping_gt
         self._id_table = id_table
-        self._cluster_count = len(clusters)
         self._cluster_id_map = {
             cluster_idx: set(cluster)
             for cluster_idx, cluster in enumerate(
@@ -172,13 +136,10 @@ class AmbiguityGenerator:
                 start=1,
             )
         }
-        self._degradation_patterns = (
-            string_degradation_patterns or self._DEFAULT_DEGRADATION_PATTERNS
-        )
         self._target_properties = set(ambiguity_target_properties or [])
         self._secondary_features = set(secondary_features or [])
         self._validate_secondary_features()
-        n_total_steps = 3 * self._cluster_count
+        n_total_steps = 3 * len(clusters)
         self._progress = Progress()
         self._main_task = self._progress.add_task(
             description="create ambiguous data", total=n_total_steps
@@ -224,12 +185,11 @@ class AmbiguityGenerator:
             ambiguity targets, secondary features, minimum-ambiguity filter,
             alphas, target floor and target links.
         :param data: materialised benchmark dataset; supplies the id table,
-            untouched true matches, ground-truth clusters and name.
+            ground-truth clusters and name.
         :returns: the generator configured for exactly this dataset.
         """
         return cls(
             data.id_table,
-            data.true_matches,
             data.compute_clusters(),
             input_cfg.ambiguity_targets,
             secondary_features=input_cfg.secondary_features,
@@ -254,12 +214,7 @@ class AmbiguityGenerator:
             )
 
     def _build_bridge_terms(self) -> list[str]:
-        try:
-            from stopwords import get_stopwords
-
-            stop = {w.lower() for w in get_stopwords("en")}
-        except Exception:  # noqa: BLE001
-            stop = set()
+        stop = {w.lower() for w in get_stopwords("en")}
 
         token_re = re.compile(r"\b\w{2,}\b")
 
@@ -295,79 +250,6 @@ class AmbiguityGenerator:
 
         ranked = sorted(scores, key=lambda t: scores[t], reverse=True)
         return [t for t in ranked[:TOP_N_BRIDGE_TERMS]]
-
-    def degrade_str(self, input_str) -> str:
-        """Remove all degradation patterns from a property value.
-
-        Degraded references keep enough of both originals to be claimed by
-        either cluster; removing the configured suffixes early makes values
-        comparable across dataset vocabularies. Removal artefacts (repeated
-        commas, stray edge commas, collapsed spaces) are normalised
-        afterwards.
-
-        :param input_str: property value to degrade.
-        :returns: the value with every pattern removed case-insensitively and
-            commas/whitespace normalised.
-        """
-        result = input_str
-        for pattern in self._degradation_patterns:
-            result = re.sub(pattern, "", result, flags=re.IGNORECASE)
-
-        # Clean up extra spaces and commas
-        result = re.sub(r"\s*,\s*,", ", ", result)
-        result = re.sub(r"^\s*,\s*|\s*,\s*$", "", result)
-        result = re.sub(r"\s+", " ", result).strip()
-
-        return result
-
-    def _select_cluster_representative(self, cluster, selector) -> str:
-        prev_degraded = ""
-        for ref in cluster:
-            initial_value = selector(ref)
-            degraded = self.degrade_str(initial_value)
-            if len(degraded) <= 5:
-                continue
-            if degraded.lower() == initial_value.lower():
-                continue
-            if len(degraded) < len(prev_degraded) or len(prev_degraded) == 0:
-                prev_degraded = degraded
-        return prev_degraded
-
-    @classmethod
-    def _edit_distance(cls, s1: str, s2: str) -> int:
-        if Levenshtein is not None:
-            return Levenshtein.distance(s1, s2)
-        if len(s1) < len(s2):
-            return cls._edit_distance(s2, s1)
-
-        if len(s2) == 0:
-            return len(s1)
-
-        previous_row = list(range(len(s2) + 1))
-        for i, c1 in enumerate(s1):
-            current_row = [i + 1]
-            for j, c2 in enumerate(s2):
-                # Cost is 0 if characters match, 1 otherwise
-                insertions = previous_row[j + 1] + 1
-                deletions = current_row[j] + 1
-                substitutions = previous_row[j] + (0 if c1 == c2 else 1)
-                current_row.append(min(insertions, deletions, substitutions))
-            previous_row = current_row
-
-        return previous_row[-1]
-
-    @classmethod
-    def _edit_similarity(cls, s1: str, s2: str) -> float:
-        if s1 == s2:
-            return 1.0
-
-        max_len = max(len(s1), len(s2))
-        if max_len == 0:
-            return 1.0 if s1 == s2 else 0.0
-
-        distance = cls._edit_distance(s1, s2)
-
-        return 1.0 - (distance / max_len)
 
     def _ambiguity_score(self, x: EntityReference, y: EntityReference) -> float:
         # Identical values are ideal bridging material (+2.0); differing
@@ -405,7 +287,9 @@ class AmbiguityGenerator:
                     if val_a in val_b or val_b in val_a:
                         increment = 2.0
                     else:
-                        increment = 2.0 * self._edit_similarity(val_a, val_b)
+                        increment = 2.0 * Levenshtein.normalized_similarity(
+                            val_a, val_b
+                        )
                     score += increment
                 else:
                     # non-target different strings become 'None' (information loss)

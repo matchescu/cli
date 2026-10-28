@@ -28,6 +28,7 @@ matchescu-base = "^0.27.7"
 matchescu-reference-extraction = "^0.9.11"
 matchescu-reference-store = "^0.9.9"
 pyresolvemetrics = "^0.3.5"
+stopwords = "^1.0.2"
 
 [tool.poetry.group.dev.dependencies]
 kaleido = ">=1.2.0,<2.0.0"

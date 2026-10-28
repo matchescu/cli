@@ -11,7 +11,7 @@ from matchescu.cli.commands.ambiguity.profiling import ProfileOptions
 @pytest.fixture
 def variant(id_table, clusters):
     generator = AmbiguityGenerator(
-        id_table, {}, clusters, ambiguity_target_properties=["name"]
+        id_table, clusters, ambiguity_target_properties=["name"]
     )
     return generator()[0.5]
 
