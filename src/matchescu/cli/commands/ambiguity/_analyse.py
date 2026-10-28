@@ -22,6 +22,13 @@ from ._shared import (
     parse_secondary_features,
 )
 
+_DATASET_DISPLAY_NAMES: dict[str, str] = {
+    "affiliationstrings": "affiliations",
+    "cora1": "cora",
+    "fodors_zagat_nophone": "fodors-zagat-nophone",
+    "geographicalSettelments": "geographic-settlements",
+}
+
 
 def analyse_threshold(
     analysis_start_value: float,
