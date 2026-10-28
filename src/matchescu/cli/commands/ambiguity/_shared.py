@@ -11,6 +11,7 @@ from matchescu.cli.runtime import make_absolute_path
 
 from ...config._config import AmbiguityConfig, AmbiguityDataConfig
 from .profiling import ProfileOptions, SplitRatio
+from .selection import ALPHA_CRITERIA, SelectionSettings, SeparabilityBounds
 
 
 def load_ambiguity_config(
@@ -179,3 +180,69 @@ def with_profile_options(command: Callable) -> Callable:
     for option in reversed(_PROFILE_OPTIONS):
         command_with_options = option(command_with_options)
     return command_with_options
+
+
+_SELECTION_OPTIONS = (
+    click.option(
+        "--min-separability",
+        "min_separability",
+        type=click.FloatRange(min=0, max=1),
+        default=SeparabilityBounds.DEFAULT_MIN_SEPARABILITY,
+        show_default=True,
+        help="Lowest content separability |2*AUC-1| a usable alpha may have",
+    ),
+    click.option(
+        "--max-auc",
+        "max_auc",
+        type=click.FloatRange(min=0.5, max=1, min_open=True),
+        default=SeparabilityBounds.DEFAULT_MAX_AUC,
+        show_default=True,
+        help="Highest content AUC (in its stronger direction) a usable alpha may have",
+    ),
+    click.option(
+        "--alpha-criterion",
+        "alpha_criterion",
+        type=click.Choice(sorted(ALPHA_CRITERIA)),
+        default=SelectionSettings.DEFAULT_CRITERION,
+        show_default=True,
+        help="How to choose among the alphas inside the separability bounds",
+    ),
+    click.option(
+        "--target-resolvable",
+        "target_resolvable",
+        type=click.FloatRange(min=0, max=1),
+        default=SelectionSettings.DEFAULT_TARGET_RESOLVABLE,
+        show_default=True,
+        help="Resolvable-bridge share the gmm-balance criterion aims for",
+    ),
+)
+
+
+def with_selection_settings(command: Callable) -> Callable:
+    """Add the alpha selection options to a click command.
+
+    The options reach the command as a single ``selection_settings``
+    keyword holding a :class:`SelectionSettings`; inconsistent bounds are
+    reported as a usage error.
+
+    :param command: command callback accepting ``selection_settings``.
+    :returns: the callback, decorated with every selection option.
+    """
+
+    @wraps(command)
+    def command_with_settings(*args, **kwargs):
+        try:
+            settings = SelectionSettings(
+                SeparabilityBounds(
+                    kwargs.pop("min_separability"), kwargs.pop("max_auc")
+                ),
+                kwargs.pop("alpha_criterion"),
+                kwargs.pop("target_resolvable"),
+            )
+        except ValueError as err:
+            raise click.UsageError(str(err)) from err
+        return command(*args, selection_settings=settings, **kwargs)
+
+    for option in reversed(_SELECTION_OPTIONS):
+        command_with_settings = option(command_with_settings)
+    return command_with_settings

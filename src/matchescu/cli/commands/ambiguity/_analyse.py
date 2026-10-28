@@ -12,15 +12,24 @@ from polars import DataFrame
 
 from matchescu.cli.runtime import get_options
 
+from ._alpha_sweep import AlphaSweep, AlphaSweepResult
 from ._generate import AmbiguityGenerator
 from ._gmm_fit import GmmFit, InsufficientScoresError
-from ._plotting import render_gmm_fit_plot, render_threshold_plot
+from ._plotting import (
+    render_alpha_sweep_plot,
+    render_gmm_fit_plot,
+    render_threshold_plot,
+)
 from ._shared import (
     load_ambiguity_config,
     load_benchmark_data,
     parse_alphas,
     parse_secondary_features,
+    with_profile_options,
+    with_selection_settings,
 )
+from .profiling import ProfileOptions
+from .selection import AlphaSelector, SelectionSettings
 
 _DATASET_DISPLAY_NAMES: dict[str, str] = {
     "affiliationstrings": "affiliations",
@@ -30,6 +39,7 @@ _DATASET_DISPLAY_NAMES: dict[str, str] = {
 }
 
 DEFAULT_ALPHA_GRID: str = "0.5,0.65,0.8,0.95"
+DISPLAY_DECIMALS: int = 2
 
 
 def analyse_threshold(
@@ -111,14 +121,18 @@ def build_methodology_rows(
     analysis_frames: list[DataFrame],
     analysis_fits: list[GmmFit],
     analysis_bridges: list[int],
+    analysis_sweeps: list[AlphaSweepResult],
+    selection_settings: SelectionSettings,
 ) -> list[dict[Any, Any]]:
     """Summarise every analysed dataset into methodology report rows.
 
     Each row condenses one dataset's fit into the numbers populating the
     ambiguity-injection table: bridges available at the fitted threshold,
-    normalised per cluster, plus the component statistics. Display rounding
-    (2 decimals) happens here so the CSV is directly usable, while raw
-    precision remains available on the underlying `GmmFit`.
+    normalised per cluster, the mixture component statistics, the alpha
+    chosen from the sweep with the parameters of that choice, and the bridge
+    components at the configured threshold. Display rounding (2 decimals)
+    happens here so the CSV is directly usable, while raw precision remains
+    available on the underlying `GmmFit` and in the alpha sweep CSV.
 
     :param analysis_frames: per-dataset sweep frames (the `dataset` and
         `cluster_count` columns are consumed here), index-aligned with the
@@ -127,12 +141,16 @@ def build_methodology_rows(
         component statistics.
     :param analysis_bridges: per-dataset number of bridges generation would
         produce at the fitted threshold, as returned by `analyse_threshold`.
+    :param analysis_sweeps: per-dataset alpha sweeps supplying the chosen
+        alpha and the bridge component columns.
+    :param selection_settings: parameters of the alpha choice, identical for
+        every dataset.
     :returns: one dict per dataset, in collection order; an empty input yields
         an empty list.
     """
     rows: list[dict[Any, Any]] = []
-    for df, fit, bridge_count_at_theta in zip(
-        analysis_frames, analysis_fits, analysis_bridges
+    for df, fit, bridge_count_at_theta, sweep in zip(
+        analysis_frames, analysis_fits, analysis_bridges, analysis_sweeps
     ):
         rows.append(
             {
@@ -150,9 +168,18 @@ def build_methodology_rows(
                 "sigma_superficial": round(fit.sigma_superficial, 2),
                 "pi_superficial": round(fit.pi_superficial, 2),
                 "boundary_type": fit.boundary_type,
+                **selection_settings.as_row(),
+                **_rounded(sweep.summary()),
             }
         )
     return rows
+
+
+def _rounded(columns: dict[str, Any]) -> dict[str, Any]:
+    return {
+        name: round(value, DISPLAY_DECIMALS) if isinstance(value, float) else value
+        for name, value in columns.items()
+    }
 
 
 def _write_methodology_csv(rows: list[dict[Any, Any]], out_path: Path) -> None:
@@ -163,18 +190,22 @@ def _write_methodology_csv(rows: list[dict[Any, Any]], out_path: Path) -> None:
 def write_report(
     analysis_frames: list[DataFrame],
     methodology_rows: list[dict[Any, Any]],
+    alpha_sweep_rows: list[dict[str, Any]],
     plot_dir: str | PathLike,
 ) -> None:
     """Write the tabular part of the ambiguity analysis report.
 
     The report pairs the per-dataset methodology summary with the full
     threshold sweep documenting the structural sensitivity of the theta
-    cutoff. Both artifacts are CSV-only; figures are the plotting concern's
-    responsibility and are rendered by the caller, separately.
+    cutoff, and with the full alpha sweep documenting how the chosen alpha
+    was found. All artifacts are CSV-only; figures are the plotting
+    concern's responsibility and are rendered by the caller, separately.
 
-    :param analysis_frames: per-dataset sweep frames; their concatenation is
-        the sweep artifact, so an empty collection writes nothing.
+    :param analysis_frames: per-dataset threshold sweep frames; their
+        concatenation is the threshold sweep artifact, so an empty
+        collection writes nothing.
     :param methodology_rows: summary rows built by `build_methodology_rows`.
+    :param alpha_sweep_rows: profiled alpha rows of every dataset.
     :param plot_dir: report directory; created when missing.
     :returns: None, and nothing is written when `analysis_frames` is empty.
     """
@@ -190,6 +221,9 @@ def write_report(
     # the supplemental data package.
     pl.concat(analysis_frames).write_csv(
         plot_path / "ambiguity_threshold_sweep.csv", include_header=True
+    )
+    pl.DataFrame(alpha_sweep_rows, infer_schema_length=None).write_csv(
+        plot_path / "ambiguity_alpha_sweep.csv", include_header=True
     )
 
 
@@ -243,7 +277,7 @@ def write_report(
     ),
     default=".",
     required=False,
-    help="Directory where plots and the methodology CSV are written",
+    help="Directory where plots, the methodology CSV and the sweep CSVs are written",
 )
 @click.option(
     "--secondary-features",
@@ -275,6 +309,8 @@ def write_report(
     required=False,
     help="How many links each bridge gets inside its target cluster",
 )
+@with_selection_settings
+@with_profile_options
 @click.pass_context
 def analyse_ambiguity(
     ctx: Context,
@@ -288,8 +324,22 @@ def analyse_ambiguity(
     alphas: str,
     target_floor: float,
     target_links: int,
+    selection_settings: SelectionSettings,
+    profile_options: ProfileOptions,
 ):
-    """Analyse the ambiguity potential of configured benchmark datasets."""
+    """Analyse the ambiguity potential of configured benchmark datasets.
+
+    Two searches run per dataset. The threshold search fits the minimum
+    ambiguity θ from the pairing scores, ignoring the configured
+    ``minAmbiguity``. The alpha search generates the alpha grid at the
+    configured ``minAmbiguity``, profiles every variant and chooses the
+    alpha whose content separability lies inside the bounds, by the chosen
+    criterion.
+    """
+    try:
+        alpha_sweep = AlphaSweep(AlphaSelector(selection_settings), profile_options)
+    except ValueError as err:
+        raise click.UsageError(str(err)) from err
     root_dir = get_options(ctx).root_dir
     config = load_ambiguity_config(config_file, root_dir)
     cli_secondary_features = parse_secondary_features(secondary_features)
@@ -299,6 +349,7 @@ def analyse_ambiguity(
     analysis_fits: list[GmmFit] = []
     analysis_scores: list[list[float]] = []
     analysis_bridges: list[int] = []
+    analysis_sweeps: list[AlphaSweepResult] = []
     for input_cfg in config.input_data:
         print("processing", input_cfg.dataset.directory)
         data = load_benchmark_data(input_cfg, root_dir)
@@ -326,6 +377,9 @@ def analyse_ambiguity(
         analysis_fits.append(gmm_fit)
         analysis_scores.append(scores)
         analysis_bridges.append(bridges_at_theta)
+        analysis_sweeps.append(
+            alpha_sweep.run(generator, data.id_table, sweep_df["dataset"][0])
+        )
 
     if not analysis_frames:
         warnings.warn("no dataset could be analysed; nothing written")
@@ -333,14 +387,24 @@ def analyse_ambiguity(
 
     plot_path = Path(plot_dir)
     plot_path.mkdir(parents=True, exist_ok=True)
-    for df, fit, scores in zip(analysis_frames, analysis_fits, analysis_scores):
-        bell_path = plot_path / f"gmm_fit_{df['dataset'][0]}.png"
-        render_gmm_fit_plot(scores, fit, bell_path)
+    for df, fit, scores, sweep in zip(
+        analysis_frames, analysis_fits, analysis_scores, analysis_sweeps
+    ):
+        name = df["dataset"][0]
+        render_gmm_fit_plot(scores, fit, plot_path / f"gmm_fit_{name}.png")
+        render_alpha_sweep_plot(
+            sweep, selection_settings.bounds, plot_path / f"alpha_sweep_{name}.png"
+        )
 
     methodology_rows = build_methodology_rows(
-        analysis_frames, analysis_fits, analysis_bridges
+        analysis_frames,
+        analysis_fits,
+        analysis_bridges,
+        analysis_sweeps,
+        selection_settings,
     )
-    write_report(analysis_frames, methodology_rows, plot_path)
+    alpha_sweep_rows = [row for sweep in analysis_sweeps for row in sweep.rows]
+    write_report(analysis_frames, methodology_rows, alpha_sweep_rows, plot_path)
 
     render_threshold_plot(
         analysis_frames,

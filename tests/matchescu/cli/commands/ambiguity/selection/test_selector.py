@@ -149,3 +149,14 @@ def test_is_feasible_applies_bounds_to_row(separability, expected):
     selector = AlphaSelector(SelectionSettings(SeparabilityBounds(), "smallest"))
 
     assert selector.is_feasible(_row(0.5, separability)) is expected
+
+
+def test_settings_row_reports_choice_parameters():
+    settings = SelectionSettings(SeparabilityBounds(0.3, 0.85), "gmm-balance", 0.4)
+
+    assert settings.as_row() == {
+        "alpha_criterion": "gmm-balance",
+        "min_separability": 0.3,
+        "max_auc": 0.85,
+        "target_resolvable": 0.4,
+    }

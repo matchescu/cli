@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from ._bounds import SeparabilityBounds
 from ._criteria import ALPHA_CRITERIA
@@ -35,3 +35,12 @@ class SelectionSettings:
             raise ValueError(
                 f"target_resolvable must be in [0, 1], got {self.target_resolvable}"
             )
+
+    def as_row(self) -> dict[str, Any]:
+        """Return the choice parameters as report columns."""
+        return {
+            "alpha_criterion": self.criterion,
+            "min_separability": self.bounds.min_separability,
+            "max_auc": self.bounds.max_auc,
+            "target_resolvable": self.target_resolvable,
+        }
