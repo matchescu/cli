@@ -32,7 +32,7 @@ _DATASET_DISPLAY_NAMES: dict[str, str] = {
 
 def analyse_threshold(
     analysis_start_value: float,
-    analysis_step_count: float,
+    analysis_step_count: int,
     analysis_step_size: float,
     data: CsvBenchmarkData,
     generator: AmbiguityGenerator,
@@ -48,8 +48,10 @@ def analyse_threshold(
     (Bayes boundary) separable.
 
     :param analysis_start_value: first cutoff of the sweep.
-    :param analysis_step_count: number of cutoffs in the sweep.
-    :param analysis_step_size: distance between consecutive cutoffs.
+    :param analysis_step_count: number of cutoffs in the sweep; the sweep has
+        exactly this many cutoffs.
+    :param analysis_step_size: distance between consecutive cutoffs; the
+        sweep spans `[start, start + (analysis_step_count - 1) * step_size]`.
     :param data: dataset whose bridging potential is analysed; supplies the
         cluster count normalising the bridge counts in the sweep frame and
         the display name that reports and plots reuse.
@@ -66,10 +68,8 @@ def analyse_threshold(
     """
     print(f"analysing {data.name}")
     scores = generator.best_pairing_scores()
-    threshold_range = np.arange(
-        analysis_start_value,
-        analysis_step_size * (analysis_step_count + 1),
-        analysis_step_size,
+    threshold_range = analysis_start_value + analysis_step_size * np.arange(
+        analysis_step_count
     )
     gmm_fit = GmmFit.from_scores(scores, n_init=gmm_restarts)
 
@@ -191,18 +191,18 @@ def write_report(
 @click.option(
     "--threshold-analysis-step-count",
     "analysis_step_count",
-    type=click.FLOAT,
-    default=10.0,
+    type=click.IntRange(min=1),
+    default=10,
     required=False,
-    help="How many thresholds to analyse using one-factor-at-a-time",
+    help="How many thresholds to analyse using one-factor-at-a-time (at least 1)",
 )
 @click.option(
     "--threshold-analysis-step-size",
     "analysis_step_size",
-    type=click.FLOAT,
+    type=click.FloatRange(min=0.1, min_open=True),
     default=1.0,
     required=False,
-    help="How large should the difference between consecutive thresholds be for one-factor-at-a-time analysis",
+    help="How large should the difference between consecutive thresholds be for one-factor-at-a-time analysis (greater than 0)",
 )
 @click.option(
     "--threshold-analysis-start-value",
@@ -264,7 +264,7 @@ def write_report(
 def analyse_ambiguity(
     ctx: Context,
     config_file: str | PathLike,
-    analysis_step_count: float,
+    analysis_step_count: int,
     analysis_step_size: float,
     analysis_start_value: float,
     gmm_restarts: int,
