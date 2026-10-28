@@ -69,6 +69,11 @@ class VariantNaming:
         """File name of the link log."""
         return f"{self.__base}{self.__links}_link_log.csv"
 
+    @property
+    def bridge_components(self) -> str:
+        """File name of the bridge components table; alpha does not affect it."""
+        return f"{self.__base}{self.__links}_bridge_components.csv"
+
 
 class VariantWriter:
     """Persist ambiguous dataset variants and their generation logs as CSV.

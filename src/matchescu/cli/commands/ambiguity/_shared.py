@@ -1,12 +1,14 @@
 from os import PathLike
 from pathlib import Path
 
+import click
 from matchescu.matching.evaluation.data.benchmark import CsvBenchmarkData
 
 from matchescu.cli.config import JSONConfig, new_benchmark_data_factory
 from matchescu.cli.runtime import make_absolute_path
 
 from ...config._config import AmbiguityConfig, AmbiguityDataConfig
+from .profiling import SplitRatio
 
 
 def load_ambiguity_config(
@@ -75,3 +77,18 @@ def parse_alphas(raw: str) -> tuple[float, ...]:
     :returns: weights in argument order.
     """
     return tuple(float(part.strip()) for part in raw.split(",") if part.strip())
+
+
+def parse_split_ratio(
+    _ctx: click.Context, _param: click.Parameter, raw: str
+) -> SplitRatio:
+    """Click callback turning ``--split-ratio`` into a :class:`SplitRatio`.
+
+    :param raw: comma-separated relative split sizes, e.g. ``"3,1,1"``.
+    :returns: the parsed ratio.
+    :raises click.BadParameter: when a part is not a positive number.
+    """
+    try:
+        return SplitRatio.parse(raw)
+    except ValueError as err:
+        raise click.BadParameter(str(err)) from err

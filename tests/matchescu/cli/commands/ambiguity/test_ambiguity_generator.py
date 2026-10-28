@@ -1,6 +1,7 @@
 import pytest
 
 from matchescu.cli.commands.ambiguity._generate import AmbiguityGenerator
+from matchescu.cli.commands.ambiguity._settings import GenerationSettings
 
 _HOME_CLUSTER_ID = 1
 _PROX_CLUSTER_ID = 2
@@ -282,4 +283,43 @@ def test_variant_link_log_records_target_link(
         0.8,
         bridge_ref_id.label,
         prox_ref_id.label,
+    )
+
+
+def test_settings_report_effective_generation_parameters(id_table, clusters):
+    _sut = AmbiguityGenerator(
+        id_table,
+        {},
+        clusters,
+        ambiguity_target_properties=["name", "city"],
+        secondary_features=["year"],
+        min_ambiguity=1.5,
+        alphas=(0.8, 0.5),
+        target_floor=0.25,
+        target_links=2,
+        dataset_name="ds",
+    )
+
+    assert _sut.settings == GenerationSettings(
+        dataset_name="ds",
+        ambiguity_targets=("name", "city"),
+        secondary_features=("year",),
+        min_ambiguity=1.5,
+        alphas=(0.5, 0.8),
+        target_floor=0.25,
+        target_links=2,
+    )
+
+
+def test_settings_without_optional_parameters_use_defaults(id_table, clusters):
+    _sut = AmbiguityGenerator(id_table, {}, clusters)
+
+    assert _sut.settings == GenerationSettings(
+        dataset_name="",
+        ambiguity_targets=(),
+        secondary_features=(),
+        min_ambiguity=None,
+        alphas=(0.5,),
+        target_floor=0.0,
+        target_links=1,
     )

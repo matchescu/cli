@@ -168,3 +168,7 @@ def test_writer_skips_empty_log(
     make_writer().write({0.5: make_variant(0.5, **empty_logs)})
 
     assert not (tmp_path / log_file).exists()
+
+
+def test_naming_bridge_components_file_carries_links_suffix():
+    assert VariantNaming("ds", 2).bridge_components == "amb_ds_k2_bridge_components.csv"

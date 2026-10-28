@@ -21,13 +21,16 @@ from matchescu.cli.config import AmbiguityDataConfig
 from matchescu.cli.runtime import get_options, make_absolute_path
 
 from ._bridge_labels import BridgeLabels, BridgeLabelStrategy
+from ._dataset_generation import DatasetGeneration
 from ._pairing import GreedyPairing, Pairing, PairingStrategy
 from ._ref_ids import ref_id_sort_key
+from ._settings import GenerationSettings
 from ._shared import (
     load_ambiguity_config,
     load_benchmark_data,
     parse_alphas,
     parse_secondary_features,
+    parse_split_ratio,
 )
 from ._similarity import weighted_similarity
 from ._variant import (
@@ -35,7 +38,7 @@ from ._variant import (
     AmbiguousVariant,
     ComparisonData,
 )
-from ._writer import VariantNaming, VariantWriter
+from .profiling import ProfileOptions, SplitRatio
 
 try:
     from rapidfuzz.distance import Levenshtein
@@ -190,6 +193,20 @@ class AmbiguityGenerator:
         )
         self._dataset_name = dataset_name
         self._cluster_rankings: dict[int, list[RefId]] = {}
+        self.__settings = GenerationSettings(
+            dataset_name=dataset_name,
+            ambiguity_targets=tuple(dict.fromkeys(ambiguity_target_properties or [])),
+            secondary_features=tuple(dict.fromkeys(secondary_features or [])),
+            min_ambiguity=min_ambiguity,
+            alphas=self._alphas,
+            target_floor=target_floor,
+            target_links=target_links,
+        )
+
+    @property
+    def settings(self) -> GenerationSettings:
+        """The parameters this generator actually uses."""
+        return self.__settings
 
     @classmethod
     def from_config(
@@ -977,6 +994,14 @@ class AmbiguityGenerator:
     required=False,
     help="How many links each bridge gets inside its target cluster",
 )
+@click.option(
+    "--split-ratio",
+    "split_ratio",
+    default=SplitRatio.DEFAULT,
+    show_default=True,
+    callback=parse_split_ratio,
+    help="Comma-separated relative split sizes the bridge component split load is measured against",
+)
 @click.pass_context
 def generate_ambiguous_datasets(
     ctx: Context,
@@ -986,13 +1011,20 @@ def generate_ambiguous_datasets(
     alphas: str,
     target_floor: float,
     target_links: int,
+    split_ratio: SplitRatio,
 ):
-    """Introduce ambiguous data into existing dataset."""
+    """Introduce ambiguous data into existing dataset.
+
+    Besides the variants, every run upserts one row per variant into
+    ``metadata.csv`` and writes the bridge components table, both in the
+    output directory.
+    """
     root_dir = get_options(ctx).root_dir
     config = load_ambiguity_config(config_file, root_dir)
     output_dir = make_absolute_path(output_dir, root_dir)
     cli_secondary_features = parse_secondary_features(secondary_features)
     alphas_tuple = parse_alphas(alphas)
+    generation = DatasetGeneration(output_dir, ProfileOptions(split_ratio=split_ratio))
 
     for input_cfg in config.input_data:
         print("processing", input_cfg.dataset.directory)
@@ -1005,7 +1037,4 @@ def generate_ambiguous_datasets(
             target_floor=target_floor,
             target_links=target_links,
         )
-        writer = VariantWriter(
-            data.id_table, output_dir, VariantNaming(data.name, target_links)
-        )
-        writer.write(generator())
+        generation.run(generator, data.id_table)
