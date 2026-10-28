@@ -24,6 +24,7 @@ from rich.progress import Progress
 from matchescu.cli.config import AmbiguityDataConfig
 from matchescu.cli.runtime import get_options, make_absolute_path
 
+from ._bridge_labels import BridgeLabels, BridgeLabelStrategy
 from ._pairing import GreedyPairing, Pairing, PairingStrategy
 from ._shared import (
     load_ambiguity_config,
@@ -102,6 +103,10 @@ class AmbiguityGenerator:
     :param pairing_strategy: selects the target cluster of each home cluster,
         for generation and for threshold analysis alike. Defaults to ``None``,
         meaning :class:`GreedyPairing`.
+    :param dataset_name: name of the input dataset; hashed into string bridge
+        labels so they stay reproducible and distinct across datasets.
+        Defaults to ``""``, which keeps string labels unique within the
+        dataset only. Integer labels do not use it.
 
     :ivar bridge_log: one entry per synthesised bridge value (`alpha`,
         `bridge_label`, `home_cluster`, `target_cluster`, `field`, `value`,
@@ -154,6 +159,7 @@ class AmbiguityGenerator:
         target_links: int = 1,
         *,
         pairing_strategy: PairingStrategy | None = None,
+        dataset_name: str = "",
     ) -> None:
         if not all(0 < alpha < 1 for alpha in alphas):
             raise ValueError("alphas must be in (0, 1)")
@@ -193,6 +199,7 @@ class AmbiguityGenerator:
         self._pairing_strategy = (
             pairing_strategy if pairing_strategy is not None else GreedyPairing()
         )
+        self._dataset_name = dataset_name
         self._cluster_rankings: dict[int, list[RefId]] = {}
         self.bridge_log: list[dict] = []
         self.link_log: list[dict] = []
@@ -241,6 +248,7 @@ class AmbiguityGenerator:
             alphas=alphas,
             target_floor=target_floor,
             target_links=target_links,
+            dataset_name=data.name,
         )
 
     def _validate_secondary_features(self) -> None:
@@ -761,8 +769,9 @@ class AmbiguityGenerator:
                 f"missing={stats['missing']}, equal={stats['equal']}"
             )
 
-    def _generate_ambiguous_references(self, cluster_reps, closest_correspondents):
-        max_id = max(r.id.label for r in self._id_table)
+    def _generate_ambiguous_references(
+        self, cluster_reps, closest_correspondents, next_label: BridgeLabelStrategy
+    ):
         start_refs = {k: self._id_table.get(v) for k, v in cluster_reps.items()}
         secondary_counts = {k: Counter() for k in self._secondary_features}
 
@@ -776,6 +785,7 @@ class AmbiguityGenerator:
                 self._progress.advance(self._main_task)
                 continue
             target_cluster_id, _score, target = closest_correspondents[cluster_id]
+            bridge_label = next_label(cluster_id)
             source_dict = start_ref.as_dict()
             target_dict = target.as_dict()
             all_keys = set(source_dict.keys()) | set(target_dict.keys())
@@ -821,7 +831,7 @@ class AmbiguityGenerator:
                             self.bridge_log.append(
                                 {
                                     "alpha": alpha,
-                                    "bridge_label": max_id + 1,
+                                    "bridge_label": bridge_label,
                                     "home_cluster": cluster_id,
                                     "target_cluster": target_cluster_id,
                                     "field": k,
@@ -841,10 +851,9 @@ class AmbiguityGenerator:
                         props[k] = None
             for alpha, props in per_alpha_props.items():
                 new_ref = EntityReference(
-                    RefId(max_id + 1, "ambiguity-generator"), props
+                    RefId(bridge_label, "ambiguity-generator"), props
                 )
                 ambiguous_refs[alpha][cluster_id] = new_ref
-            max_id += 1
             self._progress.advance(self._main_task)
         self._print_secondary_feature_summary(secondary_counts)
         return ambiguous_refs
@@ -950,14 +959,21 @@ class AmbiguityGenerator:
             id table; `cluster_gt` binds every reference, bridges included, to
             its cluster; `directed_gt` marks intra-cluster pairs with 1 and
             ``(target, bridge)`` pairs with 2 (directional match); the
-            undirected map mirrors the same pairs with 1.
+            undirected map mirrors the same pairs with 1. Bridge labels come
+            from :class:`BridgeLabels`: integers continue after the largest
+            existing label, strings are reproducible UUID5 values.
+        :raises TypeError: when the dataset's labels mix types or have a type
+            no bridge label strategy supports; raised before any work starts.
         """
+        next_label = BridgeLabels.labelling_strategy(
+            [ref.id.label for ref in self._id_table], self._dataset_name
+        )
         self._progress.start()
         try:
             cluster_reps = self._get_cluster_representatives()
             closest_reps = self._find_closest_rep(cluster_reps)
             ambiguous_refs = self._generate_ambiguous_references(
-                cluster_reps, closest_reps
+                cluster_reps, closest_reps, next_label
             )
             results = {}
             for alpha in self._alphas:
