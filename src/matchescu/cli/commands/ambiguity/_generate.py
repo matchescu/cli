@@ -2,15 +2,12 @@ import re
 import warnings
 from collections import Counter
 from collections.abc import Sequence
-from difflib import SequenceMatcher
 from functools import partial
 from itertools import combinations, permutations
 from os import PathLike
-from pathlib import Path
 from typing import ClassVar
 
 import click
-import polars as pl
 from click import Context
 from matchescu.matching.evaluation.data.benchmark import CsvBenchmarkData
 from matchescu.reference_store.id_table import IdTable
@@ -18,7 +15,6 @@ from matchescu.typing import EntityReference
 from matchescu.typing import (
     EntityReferenceIdentifier as RefId,
 )
-from polars import DataFrame
 from rich.progress import Progress
 
 from matchescu.cli.config import AmbiguityDataConfig
@@ -32,6 +28,14 @@ from ._shared import (
     parse_alphas,
     parse_secondary_features,
 )
+from ._similarity import weighted_similarity
+from ._variant import (
+    RESERVED_BRIDGE_PROPERTIES,
+    AmbiguousVariant,
+    ComparisonData,
+    ref_id_sort_key,
+)
+from ._writer import VariantNaming, VariantWriter
 
 try:
     from rapidfuzz.distance import Levenshtein
@@ -43,12 +47,7 @@ except ImportError:
 
 
 TOP_N_BRIDGE_TERMS: int = 10
-
-type ComparisonData = tuple[RefId, RefId]
-
-
-def _ref_id_sort_key(ref_id: RefId):
-    return (ref_id.source, ref_id.label)
+DEFAULT_ALPHAS: str = "0.65"
 
 
 def _orient(a: RefId, b: RefId, bridges: set[RefId]) -> ComparisonData:
@@ -108,23 +107,13 @@ class AmbiguityGenerator:
         Defaults to ``""``, which keeps string labels unique within the
         dataset only. Integer labels do not use it.
 
-    :ivar bridge_log: one entry per synthesised bridge value (`alpha`,
-        `bridge_label`, `home_cluster`, `target_cluster`, `field`, `value`,
-        `sim_home`, `sim_target`, `share_home`, `fallback`), for post-hoc
-        inspection of the candidate-selection behaviour.
-    :ivar link_log: one entry per bridge target link (alpha, bridge label,
-        target cluster, target label, link rank and the pairing's ambiguity
-        score), exposing the ambiguity of the links ground truth asserts.
-
     :raises ValueError: when any alpha lies outside (0, 1), `target_floor`
         lies outside [0, 1], `target_links` is below 1, secondary features
         overlap the ambiguity targets, or secondary features use the reserved
         reference properties (`source`, `target`, `target_cluster_id`).
     """
 
-    _RESERVED_REF_PROPERTIES: ClassVar[frozenset[str]] = frozenset(
-        {"source", "target", "target_cluster_id"}
-    )
+    _SYMMETRIC_ALPHA: ClassVar[float] = 0.5
     _DEFAULT_DEGRADATION_PATTERNS: ClassVar[list[str]] = [
         r",\s*USA",
         r",\s*US",
@@ -175,7 +164,7 @@ class AmbiguityGenerator:
             for cluster_idx, cluster in enumerate(
                 sorted(
                     clusters,
-                    key=lambda c: sorted(_ref_id_sort_key(r) for r in c),
+                    key=lambda c: sorted(ref_id_sort_key(r) for r in c),
                 ),
                 start=1,
             )
@@ -201,8 +190,6 @@ class AmbiguityGenerator:
         )
         self._dataset_name = dataset_name
         self._cluster_rankings: dict[int, list[RefId]] = {}
-        self.bridge_log: list[dict] = []
-        self.link_log: list[dict] = []
 
     @classmethod
     def from_config(
@@ -256,7 +243,7 @@ class AmbiguityGenerator:
             raise ValueError(
                 "secondary features must not overlap ambiguity target properties"
             )
-        reserved = self._secondary_features & self._RESERVED_REF_PROPERTIES
+        reserved = self._secondary_features & RESERVED_BRIDGE_PROPERTIES
         if reserved:
             raise ValueError(
                 f"secondary features must not contain reserved properties: "
@@ -435,7 +422,7 @@ class AmbiguityGenerator:
             self._progress.update(
                 self._main_task, description=f"nominating [{cluster_id}] cluster rep"
             )
-            candidates = sorted(ref_ids, key=_ref_id_sort_key)
+            candidates = sorted(ref_ids, key=ref_id_sort_key)
             refs = list(self._id_table.get_all(candidates))
             rep_idx = 0
             mean_ambiguities = None
@@ -513,40 +500,9 @@ class AmbiguityGenerator:
         }
 
     @classmethod
-    def _ngram_sim(cls, a: str, b: str, n: int = 3) -> float:
-        a, b = a.lower(), b.lower()
-        if len(a) < n or len(b) < n:
-            sa, sb = set(a.replace(" ", "")), set(b.replace(" ", ""))
-            return len(sa & sb) / max(len(sa | sb), 1)
-        na = {a[i : i + n] for i in range(len(a) - n + 1)}
-        nb = {b[i : i + n] for i in range(len(b) - n + 1)}
-        return len(na & nb) / max(len(na | nb), 1)
-
-    @classmethod
-    def _tok_sim(cls, a: str, b: str) -> float:
-        wa, wb = set(a.lower().split()), set(b.lower().split())
-        return len(wa & wb) / max(len(wa | wb), 1)
-
-    @classmethod
-    def _weighted_similarity(cls, a: str, b: str) -> float:
-        return (
-            0.4 * cls._ngram_sim(a, b)
-            + 0.3 * cls._tok_sim(a, b)
-            + 0.3 * SequenceMatcher(None, a.lower(), b.lower()).ratio()
-        )
-
-    @classmethod
-    def _score(cls, cand: str, a: str, b: str) -> tuple[float, float, float]:
-        if cand.lower() in (a.lower(), b.lower()):
-            return 0.0, 0.0, 0.0
-        sa, sb = cls._weighted_similarity(cand, a), cls._weighted_similarity(cand, b)
-        h = 2 * sa * sb / (sa + sb) if sa + sb else 0.0
-        return h, sa, sb
-
-    @classmethod
     def _score_pool(cls, val_a, val_b, bridge_terms) -> list[tuple[str, float, float]]:
-        # (candidate, home, target) sorted by candidate, mirroring _score:
-        # candidates equal to an input (case-insensitive) score (0.0, 0.0).
+        # (candidate, home, target) sorted by candidate; candidates equal to
+        # an input (case-insensitive) score (0.0, 0.0).
         words = list(
             dict.fromkeys(w for w in val_a.split() + val_b.split() if len(w) > 2)
         )
@@ -560,8 +516,8 @@ class AmbiguityGenerator:
                 out.append(
                     (
                         c,
-                        cls._weighted_similarity(c, val_a),
-                        cls._weighted_similarity(c, val_b),
+                        weighted_similarity(c, val_a),
+                        weighted_similarity(c, val_b),
                     )
                 )
         return sorted(out)
@@ -702,44 +658,6 @@ class AmbiguityGenerator:
             if (normalized := " ".join(c.split())) and normalized not in (a, b)
         }
 
-    @classmethod
-    def _generate_ambiguous_text(
-        cls,
-        val_a: str,
-        val_b: str,
-        n: int = 5,
-        bridge_terms: list[str] | None = None,
-    ) -> list[tuple[str, ...]]:
-        val_words = list(
-            dict.fromkeys(w for w in (val_a.split() + val_b.split()) if len(w) > 2)
-        )
-        bt = list(bridge_terms) if bridge_terms is not None else []
-        bt = list(dict.fromkeys(bt + val_words))
-
-        pool = cls._candidates(val_a, val_b, bt)
-        ranked = sorted(
-            ((c, *cls._score(c, val_a, val_b)) for c in pool),
-            key=lambda r: r[1],
-            reverse=True,
-        )
-
-        if len(ranked) < n:
-            seen = {r[0] for r in ranked}
-            fallbacks = [
-                (tok, 0.0, 0.0, 0.0)
-                for tok in val_words
-                if tok not in seen and tok.lower() not in (val_a.lower(), val_b.lower())
-            ]
-            # If still not enough, use val_a and val_b themselves as a last resort.
-            if not fallbacks:
-                for fallback_str in (val_a, val_b):
-                    if fallback_str not in seen:
-                        fallbacks.append((fallback_str, 0.0, 0.0, 0.0))
-                        seen.add(fallback_str)
-            ranked = ranked + fallbacks[: n - len(ranked)]
-
-        return ranked[:n]
-
     @staticmethod
     def _copy_secondary_feature(
         source_dict: dict,
@@ -776,6 +694,7 @@ class AmbiguityGenerator:
         secondary_counts = {k: Counter() for k in self._secondary_features}
 
         ambiguous_refs = {alpha: {} for alpha in self._alphas}
+        bridge_logs: dict[float, list[dict]] = {alpha: [] for alpha in self._alphas}
         for cluster_id, start_ref in start_refs.items():
             self._progress.update(
                 self._main_task,
@@ -819,33 +738,17 @@ class AmbiguityGenerator:
                         for props in per_alpha_props.values():
                             props[k] = ""
                     else:
-                        scored = self._score_pool(val_a, val_b, self._bridge_terms)
-                        sym = self._pick(scored, 0.5)
-                        floor = self._target_floor * sym[3] if sym else 0.0
-                        for alpha in self._alphas:
-                            pick = self._pick(scored, alpha, floor)
-                            value = (
-                                pick[0] if pick else self._fallback_text(val_a, val_b)
-                            )
-                            per_alpha_props[alpha][k] = value
-                            self.bridge_log.append(
-                                {
-                                    "alpha": alpha,
-                                    "bridge_label": bridge_label,
-                                    "home_cluster": cluster_id,
-                                    "target_cluster": target_cluster_id,
-                                    "field": k,
-                                    "value": value,
-                                    "sim_home": pick[2] if pick else None,
-                                    "sim_target": pick[3] if pick else None,
-                                    "share_home": (
-                                        pick[2] / (pick[2] + pick[3])
-                                        if pick and pick[2] + pick[3] > 0
-                                        else None
-                                    ),
-                                    "fallback": pick is None,
-                                }
-                            )
+                        origin = {
+                            "bridge_label": bridge_label,
+                            "home_cluster": cluster_id,
+                            "target_cluster": target_cluster_id,
+                            "field": k,
+                        }
+                        for alpha, entry in self._bridged_values(
+                            val_a, val_b, origin
+                        ).items():
+                            per_alpha_props[alpha][k] = entry["value"]
+                            bridge_logs[alpha].append(entry)
                 else:
                     for props in per_alpha_props.values():
                         props[k] = None
@@ -856,7 +759,44 @@ class AmbiguityGenerator:
                 ambiguous_refs[alpha][cluster_id] = new_ref
             self._progress.advance(self._main_task)
         self._print_secondary_feature_summary(secondary_counts)
-        return ambiguous_refs
+        return ambiguous_refs, bridge_logs
+
+    def _bridged_values(self, val_a: str, val_b: str, origin: dict) -> dict:
+        scored = self._score_pool(val_a, val_b, self._bridge_terms)
+        sym = self._pick(scored, self._SYMMETRIC_ALPHA)
+        floor = self._target_floor * sym[3] if sym else 0.0
+        return {
+            alpha: self._bridge_log_entry(
+                alpha,
+                origin,
+                self._pick(scored, alpha, floor),
+                self._pick(scored, alpha),
+                (val_a, val_b),
+            )
+            for alpha in self._alphas
+        }
+
+    def _bridge_log_entry(self, alpha, origin, pick, unfloored, values) -> dict:
+        sim_home, sim_target = (pick[2], pick[3]) if pick else (None, None)
+        return {
+            "alpha": alpha,
+            **origin,
+            "value": self._picked_value(pick, values),
+            "value_no_floor": self._picked_value(unfloored, values),
+            "sim_home": sim_home,
+            "sim_target": sim_target,
+            "share_home": self._share_home(pick),
+            "fallback": pick is None,
+        }
+
+    def _picked_value(self, pick, values: tuple[str, str]) -> str:
+        return pick[0] if pick else self._fallback_text(*values)
+
+    @staticmethod
+    def _share_home(pick) -> float | None:
+        if pick is None or pick[2] + pick[3] <= 0:
+            return None
+        return pick[2] / (pick[2] + pick[3])
 
     def _build_ground_truth(self, bridges, alpha):
         cluster_gt: dict[int, set[RefId]] = {
@@ -867,9 +807,10 @@ class AmbiguityGenerator:
 
         directed_gt: dict[ComparisonData, int] = {}
         undirected_gt: dict[ComparisonData, int] = {}
+        link_log: list[dict] = []
         bridge_ids = {ref.id for ref in bridges.values()}
         for cluster_id, ref_ids in cluster_gt.items():
-            sorted_ref_ids = sorted(ref_ids, key=_ref_id_sort_key)
+            sorted_ref_ids = sorted(ref_ids, key=ref_id_sort_key)
             for left, right in combinations(sorted_ref_ids, 2):
                 cmp_data = _orient(left, right, bridge_ids)
                 undirected_gt[cmp_data] = 1
@@ -883,7 +824,7 @@ class AmbiguityGenerator:
                     cmp_data = (t_id, bridge.id)
                     undirected_gt[cmp_data] = 1
                     directed_gt[cmp_data] = 2
-                    self.link_log.append(
+                    link_log.append(
                         {
                             "alpha": alpha,
                             "bridge_label": bridge.id.label,
@@ -895,7 +836,21 @@ class AmbiguityGenerator:
                             ),
                         }
                     )
-        return cluster_gt, directed_gt, undirected_gt
+        return cluster_gt, directed_gt, undirected_gt, link_log
+
+    def _variant(self, alpha: float, bridges, bridge_log) -> AmbiguousVariant:
+        cluster_gt, directed_gt, undirected_gt, link_log = self._build_ground_truth(
+            bridges, alpha
+        )
+        return AmbiguousVariant(
+            alpha=alpha,
+            bridges=tuple(bridges.values()),
+            cluster_gt=cluster_gt,
+            directed_gt=directed_gt,
+            undirected_gt=undirected_gt,
+            bridge_log=tuple(bridge_log),
+            link_log=tuple(link_log),
+        )
 
     def best_pairing_scores(self) -> list[float]:
         """Return the score of every pairing made without the threshold filter.
@@ -938,29 +893,19 @@ class AmbiguityGenerator:
         rep_refs = self._rep_refs(self._get_cluster_representatives())
         return [len(self._pairings(rep_refs, t)) for t in min_scores]
 
-    def __call__(self) -> dict[
-        float,
-        tuple[
-            list[EntityReference],
-            dict[int, set[RefId]],
-            dict[ComparisonData, int],
-            dict[ComparisonData, int],
-        ],
-    ]:
+    def __call__(self) -> dict[float, AmbiguousVariant]:
         """Generate every alpha variant of the ambiguous bridge records.
 
         Streams the three stages (representative nomination, closest-cluster
         pairing, bridge synthesis) through the shared rich progress bar, then
         derives the per-alpha ground truth from clusters and the bridges.
+        Every call starts from scratch, so repeated calls return equal
+        variants, and a variant does not depend on the other alphas
+        generated alongside it.
 
-        :returns: one entry per alpha weight; each value is the 4-tuple
-            ``(bridges, cluster_gt, directed_gt, undirected_gt)``. Bridges are
-            the synthesised references and are intentionally absent from the
-            id table; `cluster_gt` binds every reference, bridges included, to
-            its cluster; `directed_gt` marks intra-cluster pairs with 1 and
-            ``(target, bridge)`` pairs with 2 (directional match); the
-            undirected map mirrors the same pairs with 1. Bridge labels come
-            from :class:`BridgeLabels`: integers continue after the largest
+        :returns: one :class:`AmbiguousVariant` per alpha weight. Bridges are
+            intentionally absent from the id table. Bridge labels come from
+            :class:`BridgeLabels`: integers continue after the largest
             existing label, strings are reproducible UUID5 values.
         :raises TypeError: when the dataset's labels mix types or have a type
             no bridge label strategy supports; raised before any work starts.
@@ -972,137 +917,15 @@ class AmbiguityGenerator:
         try:
             cluster_reps = self._get_cluster_representatives()
             closest_reps = self._find_closest_rep(cluster_reps)
-            ambiguous_refs = self._generate_ambiguous_references(
+            ambiguous_refs, bridge_logs = self._generate_ambiguous_references(
                 cluster_reps, closest_reps, next_label
             )
-            results = {}
-            for alpha in self._alphas:
-                bridges = ambiguous_refs[alpha]
-                cluster_gt, directed_gt, undirected_gt = self._build_ground_truth(
-                    bridges, alpha
-                )
-                results[alpha] = (
-                    list(bridges.values()),
-                    cluster_gt,
-                    directed_gt,
-                    undirected_gt,
-                )
-            return results
+            return {
+                alpha: self._variant(alpha, ambiguous_refs[alpha], bridge_logs[alpha])
+                for alpha in self._alphas
+            }
         finally:
             self._progress.stop()
-
-    @staticmethod
-    def _dataset_ids_frame(data: CsvBenchmarkData, bridges) -> DataFrame:
-        ids_rows = [
-            {
-                "id": ref.id.label,
-                "source": str(ref.id.source),
-                **{
-                    k: v
-                    for k, v in ref.as_dict().items()
-                    if k not in AmbiguityGenerator._RESERVED_REF_PROPERTIES
-                },
-            }
-            for ref in [*data.id_table, *bridges]
-        ]
-        return pl.DataFrame(ids_rows)
-
-    @staticmethod
-    def _cluster_mapping_frame(cluster_gt) -> DataFrame:
-        cluster_rows = [
-            {"id": ref_id.label, "source": ref_id.source, "cluster_id": cluster_id}
-            for cluster_id, ref_ids in sorted(cluster_gt.items())
-            for ref_id in sorted(ref_ids, key=_ref_id_sort_key)
-        ]
-        return pl.DataFrame(cluster_rows)
-
-    @staticmethod
-    def _mapping_frame(mapping_gt) -> DataFrame:
-        mapping_rows = [
-            {
-                "left_id": left_id.label,
-                "left_source": left_id.source,
-                "right_id": right_id.label,
-                "right_source": right_id.source,
-                "label": c,
-            }
-            for (left_id, right_id), c in mapping_gt.items()
-        ]
-        return pl.DataFrame(mapping_rows)
-
-    def _write_variant(
-        self,
-        data: CsvBenchmarkData,
-        output_dir: Path,
-        prefix: str,
-        bridges,
-        cluster_gt,
-        directed_gt,
-        undirected_gt,
-    ) -> None:
-        data_df = self._dataset_ids_frame(data, bridges)
-        clusters_df = self._cluster_mapping_frame(cluster_gt)
-        variants = {
-            prefix: undirected_gt,
-            f"{prefix}_dir": directed_gt,
-        }
-        for output_dataset_name, mapping_gt in variants.items():
-            variant_path = output_dir / output_dataset_name
-            variant_path.mkdir(parents=True, exist_ok=True)
-            data_df.write_csv(
-                variant_path / f"{output_dataset_name}_ids.csv", include_header=True
-            )
-            self._mapping_frame(mapping_gt).write_csv(
-                variant_path / f"{output_dataset_name}_mapping.csv",
-                include_header=True,
-            )
-            clusters_df.write_csv(
-                variant_path / f"{output_dataset_name}_cluster_mapping.csv",
-                include_header=True,
-            )
-
-    def _write_generation_logs(
-        self, data: CsvBenchmarkData, output_dir: Path, k_suffix: str
-    ) -> None:
-        if self.bridge_log:
-            pl.DataFrame(self.bridge_log).write_csv(
-                output_dir / f"amb_{data.name}_bridge_log.csv", include_header=True
-            )
-        if self.link_log:
-            pl.DataFrame(self.link_log).write_csv(
-                output_dir / f"amb_{data.name}{k_suffix}_link_log.csv",
-                include_header=True,
-            )
-
-    def write_datasets(self, data: CsvBenchmarkData, output_dir: Path) -> None:
-        """Persist the ambiguous dataset variants and the generation logs.
-
-        Each alpha weight produces one undirected and one directed variant of
-        the dataset under its own directory, as an ids/mapping/cluster-mapping
-        CSV triple. The reserved bridging properties (`source`, `target`,
-        `target_cluster_id`) are stripped from the ids CSV — they document the
-        synthesis rather than the published records.
-
-        :param data: benchmark dataset supplying the id table the variants
-            extend.
-        :param output_dir: root directory under which variant directories and
-            the bridge/link log CSVs are written.
-        """
-        results = self()
-        k_suffix = f"_k{self._target_links}" if self._target_links > 1 else ""
-        for alpha, (bridges, cluster_gt, directed_gt, undirected_gt) in results.items():
-            tag = f"a{round(alpha * 100):03d}"
-            prefix = f"amb_{data.name}_{tag}{k_suffix}"
-            self._write_variant(
-                data,
-                output_dir,
-                prefix,
-                bridges,
-                cluster_gt,
-                directed_gt,
-                undirected_gt,
-            )
-        self._write_generation_logs(data, output_dir, k_suffix)
 
 
 @click.command("generate")
@@ -1134,9 +957,9 @@ class AmbiguityGenerator:
     "--alphas",
     "alphas",
     type=click.STRING,
-    default="0.5",
+    default=DEFAULT_ALPHAS,
     required=False,
-    help="Comma-separated alpha weights (in (0, 1)) for the harmonic-mean pick",
+    help="Comma-separated alpha weights (in (0, 1)) for the harmonic-mean pick; one dataset variant per weight",
 )
 @click.option(
     "--target-floor",
@@ -1182,4 +1005,7 @@ def generate_ambiguous_datasets(
             target_floor=target_floor,
             target_links=target_links,
         )
-        generator.write_datasets(data, output_dir)
+        writer = VariantWriter(
+            data.id_table, output_dir, VariantNaming(data.name, target_links)
+        )
+        writer.write(generator())

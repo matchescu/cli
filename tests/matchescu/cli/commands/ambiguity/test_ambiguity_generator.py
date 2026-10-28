@@ -13,8 +13,13 @@ def _run(_sut):
     default configuration has a single alpha (0.5). Bridges are returned by the
     generator, not stored in the id table.
     """
-    bridges, cluster_gt, directed_gt, undirected_gt = _sut()[0.5]
-    return bridges[0], cluster_gt, directed_gt, undirected_gt
+    variant = _sut()[0.5]
+    return (
+        variant.bridges[0],
+        variant.cluster_gt,
+        variant.directed_gt,
+        variant.undirected_gt,
+    )
 
 
 @pytest.fixture
@@ -179,3 +184,102 @@ def test_summary_absent_when_no_secondary_features(
     captured = capsys.readouterr()
 
     assert "secondary feature" not in captured.out
+
+
+def _bridge_values(variant):
+    return [bridge.as_dict() for bridge in variant.bridges]
+
+
+def test_variant_carries_its_alpha(make_generator, id_table, clusters):
+    _sut = make_generator(id_table, clusters, alphas=(0.5, 0.65))
+
+    variants = _sut()
+
+    assert {alpha: v.alpha for alpha, v in variants.items()} == {0.5: 0.5, 0.65: 0.65}
+
+
+def test_repeated_call_returns_equal_variants(make_generator, id_table, clusters):
+    _sut = make_generator(id_table, clusters, alphas=(0.5, 0.8))
+
+    first, second = _sut(), _sut()
+
+    assert first == second
+
+
+def test_repeated_call_returns_equal_bridge_values(make_generator, id_table, clusters):
+    _sut = make_generator(id_table, clusters, alphas=(0.5, 0.8))
+
+    first, second = _sut()[0.8], _sut()[0.8]
+
+    assert _bridge_values(first) == _bridge_values(second)
+
+
+def test_variant_bridges_do_not_depend_on_alpha_grid(
+    make_generator, id_table, clusters
+):
+    alone = make_generator(id_table, clusters, alphas=(0.65,))()[0.65]
+    in_grid = make_generator(id_table, clusters, alphas=(0.5, 0.65, 0.95))()[0.65]
+
+    assert _bridge_values(alone) == _bridge_values(in_grid)
+
+
+def test_variant_bridge_log_does_not_depend_on_alpha_grid(
+    make_generator, id_table, clusters
+):
+    alone = make_generator(id_table, clusters, alphas=(0.65,))()[0.65]
+    in_grid = make_generator(id_table, clusters, alphas=(0.5, 0.65, 0.95))()[0.65]
+
+    assert alone.bridge_log == in_grid.bridge_log
+
+
+def test_variant_bridge_log_holds_only_its_alpha(make_generator, id_table, clusters):
+    _sut = make_generator(id_table, clusters, alphas=(0.5, 0.8))
+
+    variant = _sut()[0.8]
+
+    assert {entry["alpha"] for entry in variant.bridge_log} == {0.8}
+
+
+def test_bridge_log_value_matches_bridge_value(make_generator, id_table, clusters):
+    _sut = make_generator(id_table, clusters)
+    variant = _sut()[0.5]
+
+    (entry,) = variant.bridge_log
+
+    assert entry["value"] == variant.bridges[0]["name"]
+
+
+def test_bridge_log_value_no_floor_equals_value_without_floor(
+    make_generator, id_table, clusters
+):
+    _sut = make_generator(id_table, clusters, target_floor=0.0)
+
+    (entry,) = _sut()[0.5].bridge_log
+
+    assert entry["value_no_floor"] == entry["value"]
+
+
+def test_bridge_log_value_no_floor_equals_unfloored_pick(
+    make_generator, id_table, clusters
+):
+    unfloored = make_generator(id_table, clusters, alphas=(0.8,), target_floor=0.0)
+    floored = make_generator(id_table, clusters, alphas=(0.8,), target_floor=1.0)
+
+    (expected,) = unfloored()[0.8].bridge_log
+    (actual,) = floored()[0.8].bridge_log
+
+    assert actual["value_no_floor"] == expected["value"]
+
+
+def test_variant_link_log_records_target_link(
+    make_generator, id_table, clusters, bridge_ref_id, prox_ref_id
+):
+    _sut = make_generator(id_table, clusters, alphas=(0.5, 0.8))
+
+    (entry,) = _sut()[0.8].link_log
+
+    assert (entry["alpha"], entry["bridge_label"], entry["target_label"]) == (
+        0.8,
+        bridge_ref_id.label,
+        prox_ref_id.label,
+    )

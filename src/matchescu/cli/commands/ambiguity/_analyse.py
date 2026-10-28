@@ -29,6 +29,8 @@ _DATASET_DISPLAY_NAMES: dict[str, str] = {
     "geographicalSettelments": "geographic-settlements",
 }
 
+DEFAULT_ALPHA_GRID: str = "0.5,0.65,0.8,0.95"
+
 
 def analyse_threshold(
     analysis_start_value: float,
@@ -253,9 +255,9 @@ def write_report(
     "--alphas",
     "alphas",
     type=click.STRING,
-    default="0.5",
+    default=DEFAULT_ALPHA_GRID,
     required=False,
-    help="Comma-separated alpha weights (in (0, 1)) for the harmonic-mean pick",
+    help="Comma-separated alpha weights (in (0, 1)) for the harmonic-mean pick; the grid the alpha search explores",
 )
 @click.option(
     "--target-floor",
