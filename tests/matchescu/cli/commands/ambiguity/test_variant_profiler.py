@@ -18,7 +18,7 @@ def variant(id_table, clusters):
 
 @pytest.fixture
 def sut(id_table):
-    return VariantProfiler(id_table, RecordSimilarity(["name"]), ProfileOptions())
+    return VariantProfiler(id_table, ["name"], ProfileOptions())
 
 
 @pytest.fixture
@@ -43,7 +43,7 @@ def test_profile_reads_variant(row, column, expected):
     assert row[column] == expected
 
 
-def test_profile_scores_pairs_with_given_similarity(row, variant, id_table, home_ref):
+def test_profile_compares_records_on_given_fields(row, variant, id_table, home_ref):
     similarity = RecordSimilarity(["name"])
     expected = similarity(home_ref.as_dict(), variant.bridges[0].as_dict())
 
@@ -60,3 +60,8 @@ def test_components_link_home_and_target_clusters(sut, variant):
             "n_label2": 1,
         }
     ]
+
+
+def test_profiler_without_fields_raises(id_table):
+    with pytest.raises(ValueError, match="field"):
+        VariantProfiler(id_table, [], ProfileOptions())

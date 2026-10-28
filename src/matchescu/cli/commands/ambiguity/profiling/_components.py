@@ -47,6 +47,11 @@ class BridgeComponents:
 
     def __init__(self, components: Iterable[BridgeComponent]) -> None:
         self.__components = tuple(sorted(components, key=self.__size_rank))
+        self.__number_of = {
+            cluster_id: number
+            for number, component in enumerate(self.__components, start=1)
+            for cluster_id in component.clusters
+        }
 
     @classmethod
     def from_input(cls, profile_input: ProfileInput) -> "BridgeComponents":
@@ -83,6 +88,15 @@ class BridgeComponents:
     def largest(self) -> BridgeComponent | None:
         """The component with the most clusters, or ``None`` without bridges."""
         return self.__components[0] if self.__components else None
+
+    def component_of(self, cluster_id: Hashable) -> int | None:
+        """Return the number of the component holding a cluster.
+
+        :param cluster_id: id of any cluster of the dataset.
+        :returns: the component number, as in :meth:`rows`, or ``None`` for
+            a cluster no bridge touches.
+        """
+        return self.__number_of.get(cluster_id)
 
     def rows(self) -> list[dict[str, Any]]:
         """Return one CSV-ready row per component, numbered from 1."""

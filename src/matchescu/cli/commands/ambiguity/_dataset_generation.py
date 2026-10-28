@@ -6,7 +6,6 @@ import polars as pl
 from matchescu.reference_store.id_table import IdTable
 
 from ._metadata import GenerationIdentity, MetadataStore
-from ._record_similarity import RecordSimilarity
 from ._variant import AmbiguousVariant
 from ._variant_profiler import VariantProfiler
 from ._writer import VariantNaming, VariantWriter
@@ -45,9 +44,7 @@ class DatasetGeneration:
             before anything is generated or written.
         """
         settings = generator.settings
-        profiler = VariantProfiler(
-            id_table, RecordSimilarity(settings.ambiguity_targets), self.__options
-        )
+        profiler = VariantProfiler(id_table, settings.ambiguity_targets, self.__options)
         naming = VariantNaming(settings.dataset_name, settings.target_links)
         variants = generator()
         paths = VariantWriter(id_table, self.__output_dir, naming).write(variants)

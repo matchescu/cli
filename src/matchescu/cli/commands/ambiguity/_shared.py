@@ -1,3 +1,5 @@
+from collections.abc import Callable
+from functools import wraps
 from os import PathLike
 from pathlib import Path
 
@@ -8,7 +10,7 @@ from matchescu.cli.config import JSONConfig, new_benchmark_data_factory
 from matchescu.cli.runtime import make_absolute_path
 
 from ...config._config import AmbiguityConfig, AmbiguityDataConfig
-from .profiling import SplitRatio
+from .profiling import ProfileOptions, SplitRatio
 
 
 def load_ambiguity_config(
@@ -92,3 +94,88 @@ def parse_split_ratio(
         return SplitRatio.parse(raw)
     except ValueError as err:
         raise click.BadParameter(str(err)) from err
+
+
+_PROFILE_OPTIONS = (
+    click.option(
+        "--split-ratio",
+        "split_ratio",
+        default=SplitRatio.DEFAULT,
+        show_default=True,
+        callback=parse_split_ratio,
+        help="Comma-separated relative split sizes the bridge component split "
+        "load is measured against",
+    ),
+    click.option(
+        "--negative-similarity",
+        "negative_similarity",
+        is_flag=True,
+        help="Compute the similarity of sampled label-0 pairs against the "
+        "positives (supplementary)",
+    ),
+    click.option(
+        "--neg-pos-ratio",
+        "neg_pos_ratio",
+        type=click.FloatRange(min=0, min_open=True),
+        default=ProfileOptions.DEFAULT_NEG_POS_RATIO,
+        show_default=True,
+        help="Label-0 pairs sampled per positive pair for --negative-similarity",
+    ),
+    click.option(
+        "--surface-baseline",
+        "surface_baseline",
+        is_flag=True,
+        help="Compute the surface-feature direction baseline (supplementary)",
+    ),
+    click.option(
+        "--synthetic-detectability",
+        "synthetic_detectability",
+        is_flag=True,
+        help="Compute how detectable bridge records are (supplementary)",
+    ),
+    click.option(
+        "--seed",
+        "seed",
+        type=click.INT,
+        default=ProfileOptions.DEFAULT_SEED,
+        show_default=True,
+        help="Seed of negative sampling and cross-validation folds",
+    ),
+    click.option(
+        "--cv-folds",
+        "cv_folds",
+        type=click.IntRange(min=ProfileOptions.MIN_CV_FOLDS),
+        default=ProfileOptions.DEFAULT_CV_FOLDS,
+        show_default=True,
+        help="Folds of the component-grouped cross-validation",
+    ),
+)
+
+
+def with_profile_options(command: Callable) -> Callable:
+    """Add the dataset profile options to a click command.
+
+    The options reach the command as a single ``profile_options`` keyword
+    holding a :class:`ProfileOptions`, so commands sharing them keep short
+    signatures and cannot drift apart.
+
+    :param command: command callback accepting ``profile_options``.
+    :returns: the callback, decorated with every profile option.
+    """
+
+    @wraps(command)
+    def command_with_options(*args, **kwargs):
+        options = ProfileOptions(
+            split_ratio=kwargs.pop("split_ratio"),
+            negative_similarity=kwargs.pop("negative_similarity"),
+            neg_pos_ratio=kwargs.pop("neg_pos_ratio"),
+            surface_baseline=kwargs.pop("surface_baseline"),
+            synthetic_detectability=kwargs.pop("synthetic_detectability"),
+            seed=kwargs.pop("seed"),
+            cv_folds=kwargs.pop("cv_folds"),
+        )
+        return command(*args, profile_options=options, **kwargs)
+
+    for option in reversed(_PROFILE_OPTIONS):
+        command_with_options = option(command_with_options)
+    return command_with_options

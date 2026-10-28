@@ -1,8 +1,9 @@
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from matchescu.reference_store.id_table import IdTable
 
+from ._record_similarity import RecordSimilarity
 from ._variant import AmbiguousVariant
 from .profiling import (
     BridgeComponents,
@@ -17,21 +18,21 @@ class VariantProfiler:
 
     Translates a variant into the neutral profiling input: original records
     plus bridges, the variant's cluster mapping, its directed mapping and
-    its generation logs.
+    its generation logs. Records are compared on the ambiguity targets only:
+    those are the fields the generator synthesises.
 
     :param id_table: original records of the source dataset.
-    :param similarity: content similarity used by the direction metrics.
+    :param fields: ambiguity targets of the dataset.
     :param options: settings of every profile.
+    :raises ValueError: when `fields` is empty.
     """
 
     def __init__(
-        self,
-        id_table: IdTable,
-        similarity: Callable[[Mapping, Mapping], float],
-        options: ProfileOptions,
+        self, id_table: IdTable, fields: Sequence[str], options: ProfileOptions
     ) -> None:
         self.__records = {ref.id: ref.as_dict() for ref in id_table}
-        self.__similarity = similarity
+        self.__similarity = RecordSimilarity(fields)
+        self.__fields = tuple(fields)
         self.__options = options
         self.__profiler = Profiler()
 
@@ -53,6 +54,7 @@ class VariantProfiler:
             },
             directed_gt=variant.directed_gt,
             similarity=self.__similarity,
+            fields=self.__fields,
             bridge_log=variant.bridge_log,
             link_log=variant.link_log,
         )

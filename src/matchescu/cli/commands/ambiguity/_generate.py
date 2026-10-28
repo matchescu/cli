@@ -30,7 +30,7 @@ from ._shared import (
     load_benchmark_data,
     parse_alphas,
     parse_secondary_features,
-    parse_split_ratio,
+    with_profile_options,
 )
 from ._similarity import weighted_similarity
 from ._variant import (
@@ -38,7 +38,7 @@ from ._variant import (
     AmbiguousVariant,
     ComparisonData,
 )
-from .profiling import ProfileOptions, SplitRatio
+from .profiling import ProfileOptions
 
 try:
     from rapidfuzz.distance import Levenshtein
@@ -994,14 +994,7 @@ class AmbiguityGenerator:
     required=False,
     help="How many links each bridge gets inside its target cluster",
 )
-@click.option(
-    "--split-ratio",
-    "split_ratio",
-    default=SplitRatio.DEFAULT,
-    show_default=True,
-    callback=parse_split_ratio,
-    help="Comma-separated relative split sizes the bridge component split load is measured against",
-)
+@with_profile_options
 @click.pass_context
 def generate_ambiguous_datasets(
     ctx: Context,
@@ -1011,7 +1004,7 @@ def generate_ambiguous_datasets(
     alphas: str,
     target_floor: float,
     target_links: int,
-    split_ratio: SplitRatio,
+    profile_options: ProfileOptions,
 ):
     """Introduce ambiguous data into existing dataset.
 
@@ -1024,7 +1017,7 @@ def generate_ambiguous_datasets(
     output_dir = make_absolute_path(output_dir, root_dir)
     cli_secondary_features = parse_secondary_features(secondary_features)
     alphas_tuple = parse_alphas(alphas)
-    generation = DatasetGeneration(output_dir, ProfileOptions(split_ratio=split_ratio))
+    generation = DatasetGeneration(output_dir, profile_options)
 
     for input_cfg in config.input_data:
         print("processing", input_cfg.dataset.directory)

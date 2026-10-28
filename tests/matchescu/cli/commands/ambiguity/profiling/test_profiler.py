@@ -82,3 +82,29 @@ def test_profile_holds_calculator_values(profile_input, column, expected):
     row = Profiler().profile(profile_input, ProfileOptions())
 
     assert row[column] == pytest.approx(expected)
+
+
+@pytest.mark.parametrize(
+    "options, first_column",
+    [
+        pytest.param({"negative_similarity": True}, "neg_sample_size", id="negatives"),
+        pytest.param({"surface_baseline": True}, "surface_auc_symmetric", id="surface"),
+        pytest.param(
+            {"synthetic_detectability": True},
+            "detect_auc_best_single",
+            id="detectability",
+        ),
+    ],
+)
+def test_enabled_optional_columns_follow_core_columns(
+    profile_input, options, first_column
+):
+    row = Profiler().profile(profile_input, ProfileOptions(cv_folds=2, **options))
+
+    assert list(row)[len(CORE_COLUMNS)] == first_column
+
+
+def test_optional_columns_are_absent_by_default(profile_input):
+    row = Profiler().profile(profile_input, ProfileOptions())
+
+    assert len(row) == len(CORE_COLUMNS)

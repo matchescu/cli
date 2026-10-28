@@ -8,6 +8,9 @@ Clusters (bridges are the ``b*`` records, listed last in their home cluster)::
 Target links (label 2): b1 -> t1, t2 (cluster 2); b2 -> t1 (cluster 2) and
 u1 (cluster 3); b3 -> h1 (cluster 7). Bridge components are therefore
 {1, 2, 3, 4} and {5, 7}; cluster 6 is unbridged.
+
+The similarity table is symmetric. Every listed pair is positive except
+(a1, t2), the only implicit negative with a non-zero similarity.
 """
 
 from itertools import combinations
@@ -46,6 +49,7 @@ SIMILARITIES = {
     ("a1", "a2"): 1.0,
     ("t1", "t2"): 0.1,
     ("f1", "f2"): 0.5,
+    ("a1", "t2"): 0.95,
 }
 
 
@@ -54,7 +58,8 @@ def ref(label: str) -> RefId:
 
 
 def table_similarity(left, right) -> float:
-    return SIMILARITIES.get((left[LABEL], right[LABEL]), 0.0)
+    key = (left[LABEL], right[LABEL])
+    return SIMILARITIES.get(key, SIMILARITIES.get(key[::-1], 0.0))
 
 
 def _directed_gt(clusters, target_links):
@@ -69,10 +74,11 @@ def _directed_gt(clusters, target_links):
 
 @pytest.fixture
 def make_input():
-    def _make(clusters=CLUSTERS, target_links=TARGET_LINKS, **logs):
+    def _make(clusters=CLUSTERS, target_links=TARGET_LINKS, texts=None, **kwargs):
+        texts = texts or {}
         return ProfileInput(
             records={
-                ref(label): {LABEL: label}
+                ref(label): {LABEL: label, **texts.get(label, {})}
                 for members in clusters.values()
                 for label in members
             },
@@ -83,7 +89,7 @@ def make_input():
             },
             directed_gt=_directed_gt(clusters, target_links),
             similarity=table_similarity,
-            **logs,
+            **kwargs,
         )
 
     return _make

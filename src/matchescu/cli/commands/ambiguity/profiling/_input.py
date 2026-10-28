@@ -23,6 +23,8 @@ class ProfileInput:
     :ivar cluster_of: cluster id of every record.
     :ivar directed_gt: label of every positive pair (1 or 2).
     :ivar similarity: content similarity of two records' field values.
+    :ivar fields: fields the text-based baselines inspect; empty means every
+        field found on any record.
     :ivar bridge_log: optional per-bridge-value generation log; enables the
         bridge text metrics.
     :ivar link_log: optional per-target-link generation log; enables the
@@ -33,8 +35,16 @@ class ProfileInput:
     cluster_of: Mapping[RefId, Hashable]
     directed_gt: Mapping[RecordPair, int]
     similarity: Callable[[RecordValues, RecordValues], float]
+    fields: Sequence[str] = ()
     bridge_log: Sequence[Mapping[str, Any]] = ()
     link_log: Sequence[Mapping[str, Any]] = ()
+
+    @cached_property
+    def compared_fields(self) -> tuple[str, ...]:
+        """`fields`, or every field of any record, sorted, when unset."""
+        if self.fields:
+            return tuple(self.fields)
+        return tuple(sorted({f for values in self.records.values() for f in values}))
 
     @cached_property
     def clusters(self) -> dict[Hashable, frozenset[RefId]]:

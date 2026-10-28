@@ -55,3 +55,17 @@ def test_dataset_without_bridges_has_no_largest_component(make_input):
     profile_input = make_input(clusters={1: ("a1", "a2")}, target_links=())
 
     assert BridgeComponents.from_input(profile_input).largest is None
+
+
+@pytest.mark.parametrize(
+    "cluster_id, expected",
+    [
+        pytest.param(3, 1, id="largest"),
+        pytest.param(7, 2, id="second"),
+        pytest.param(6, None, id="unbridged"),
+    ],
+)
+def test_component_of_numbers_clusters_like_rows(profile_input, cluster_id, expected):
+    components = BridgeComponents.from_input(profile_input)
+
+    assert components.component_of(cluster_id) == expected

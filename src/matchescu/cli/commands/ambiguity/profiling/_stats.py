@@ -79,3 +79,8 @@ def separability(auc_value: float | None) -> float | None:
     perfectly, whether positives rank above or below negatives.
     """
     return None if auc_value is None else abs(2 * auc_value - 1)
+
+
+def oriented_auc(auc_value: float | None) -> float | None:
+    """Return ``max(auc, 1 - auc)``: AUC read in its stronger direction."""
+    return None if auc_value is None else max(auc_value, 1 - auc_value)
