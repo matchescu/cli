@@ -37,15 +37,22 @@ def analyse_threshold(
     data: CsvBenchmarkData,
     generator: AmbiguityGenerator,
     gmm_restarts: int = 50,
-) -> tuple[DataFrame, GmmFit, list[float]]:
+) -> tuple[DataFrame, GmmFit, list[float], int]:
     """Compute the threshold sweep and the GMM-optimal cutoff for one dataset.
 
-    The sweep is deliberately one-factor-at-a-time: bridge counts are counted
-    at evenly spaced cutoffs over the generator's best-pairing scores,
-    exposing how sensitive bridge availability is to the cutoff alone. The
-    mixture fit then supplies the data-driven cutoff that the sweep is judged
-    against, keeping structural analysis (sweep) and statistical analysis
-    (Bayes boundary) separable.
+    The mixture is fitted on the pairing scores made without any threshold,
+    so the data-driven cutoff does not depend on the configured operating
+    point. The sweep is deliberately one-factor-at-a-time: at evenly spaced
+    cutoffs it reports how many bridges generation would actually produce
+    with ``min_ambiguity`` set to that cutoff, exposing how sensitive bridge
+    availability is to the cutoff alone. The same count is taken at the
+    fitted cutoff.
+
+    .. note::
+        The pairing runs once for the unfiltered scores and once more for
+        every sweep cutoff plus the fitted cutoff, so the scoring cost grows
+        with `analysis_step_count`. The fit runs right after the first run,
+        so a dataset with too few scores fails before the expensive runs.
 
     :param analysis_start_value: first cutoff of the sweep.
     :param analysis_step_count: number of cutoffs in the sweep; the sweep has
@@ -56,22 +63,26 @@ def analyse_threshold(
         cluster count normalising the bridge counts in the sweep frame and
         the display name that reports and plots reuse.
     :param generator: generator built for `data`; its pairing scores are the
-        analysed population. Its `min_ambiguity` filter is ignored for these
-        scores, per `best_pairing_scores`.
+        population the mixture is fitted on, and its pairing strategy decides
+        the bridge counts. Its own `min_ambiguity` is ignored here.
     :param gmm_restarts: random restarts for the mixture fit; more restarts
         trade runtime for a more stable decision boundary.
     :returns: the sweep frame (columns `dataset`, `threshold`, `bridge_count`,
         `cluster_count`; dataset carries the display name), the resolved
-        `GmmFit` and the raw best-pairing scores — one score population feeds
-        both artifacts directly and callers reuse it for plots and report
-        rows without refitting.
+        `GmmFit`, the unfiltered pairing scores the fit was made on, and the
+        number of bridges generation would produce at the fitted cutoff.
+    :raises InsufficientScoresError: when the dataset yields too few pairing
+        scores for the mixture fit; no bridge counting happens in that case.
     """
     print(f"analysing {data.name}")
     scores = generator.best_pairing_scores()
+    gmm_fit = GmmFit.from_scores(scores, n_init=gmm_restarts)
     threshold_range = analysis_start_value + analysis_step_size * np.arange(
         analysis_step_count
     )
-    gmm_fit = GmmFit.from_scores(scores, n_init=gmm_restarts)
+    *sweep_counts, bridges_at_theta = generator.bridge_counts(
+        [*threshold_range.tolist(), gmm_fit.threshold]
+    )
 
     display_name = _DATASET_DISPLAY_NAMES.get(data.name, data.name)
     cluster_count = len(data.compute_clusters())
@@ -80,23 +91,24 @@ def analyse_threshold(
         {
             "dataset": display_name,
             "threshold": t,
-            "bridge_count": sum(1 for s in scores if s >= t),
+            "bridge_count": count,
             "cluster_count": cluster_count,
         }
-        for t in threshold_range
+        for t, count in zip(threshold_range, sweep_counts)
     ]
 
     return (
         pl.DataFrame(data=sweep_rows),
         gmm_fit,
         scores,
+        bridges_at_theta,
     )
 
 
 def build_methodology_rows(
     analysis_frames: list[DataFrame],
     analysis_fits: list[GmmFit],
-    analysis_scores: list[list[float | int]],
+    analysis_bridges: list[int],
 ) -> list[dict[Any, Any]]:
     """Summarise every analysed dataset into methodology report rows.
 
@@ -111,14 +123,15 @@ def build_methodology_rows(
         other collections.
     :param analysis_fits: per-dataset fits supplying the theta boundary and
         component statistics.
-    :param analysis_scores: per-dataset best-pairing scores; their count above
-        the threshold is the bridge availability reported per row.
+    :param analysis_bridges: per-dataset number of bridges generation would
+        produce at the fitted threshold, as returned by `analyse_threshold`.
     :returns: one dict per dataset, in collection order; an empty input yields
         an empty list.
     """
     rows: list[dict[Any, Any]] = []
-    for df, fit, scores in zip(analysis_frames, analysis_fits, analysis_scores):
-        bridge_count_at_theta = fit.bridge_count(scores)
+    for df, fit, bridge_count_at_theta in zip(
+        analysis_frames, analysis_fits, analysis_bridges
+    ):
         rows.append(
             {
                 "dataset": df["dataset"][0],
@@ -199,7 +212,7 @@ def write_report(
 @click.option(
     "--threshold-analysis-step-size",
     "analysis_step_size",
-    type=click.FloatRange(min=0.1, min_open=True),
+    type=click.FloatRange(min=0.1),
     default=1.0,
     required=False,
     help="How large should the difference between consecutive thresholds be for one-factor-at-a-time analysis (greater than 0)",
@@ -283,6 +296,7 @@ def analyse_ambiguity(
     analysis_frames: list[DataFrame] = []
     analysis_fits: list[GmmFit] = []
     analysis_scores: list[list[float]] = []
+    analysis_bridges: list[int] = []
     for input_cfg in config.input_data:
         print("processing", input_cfg.dataset.directory)
         data = load_benchmark_data(input_cfg, root_dir)
@@ -295,7 +309,7 @@ def analyse_ambiguity(
             target_links=target_links,
         )
         try:
-            sweep_df, gmm_fit, scores = analyse_threshold(
+            sweep_df, gmm_fit, scores, bridges_at_theta = analyse_threshold(
                 analysis_start_value,
                 analysis_step_count,
                 analysis_step_size,
@@ -309,6 +323,7 @@ def analyse_ambiguity(
         analysis_frames.append(sweep_df)
         analysis_fits.append(gmm_fit)
         analysis_scores.append(scores)
+        analysis_bridges.append(bridges_at_theta)
 
     if not analysis_frames:
         warnings.warn("no dataset could be analysed; nothing written")
@@ -321,7 +336,7 @@ def analyse_ambiguity(
         render_gmm_fit_plot(scores, fit, bell_path)
 
     methodology_rows = build_methodology_rows(
-        analysis_frames, analysis_fits, analysis_scores
+        analysis_frames, analysis_fits, analysis_bridges
     )
     write_report(analysis_frames, methodology_rows, plot_path)
 
@@ -329,5 +344,6 @@ def analyse_ambiguity(
         analysis_frames,
         analysis_fits,
         analysis_scores,
+        analysis_bridges,
         plot_path / "threshold_analysis.png",
     )

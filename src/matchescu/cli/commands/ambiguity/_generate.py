@@ -1,7 +1,9 @@
 import re
 import warnings
 from collections import Counter
+from collections.abc import Sequence
 from difflib import SequenceMatcher
+from functools import partial
 from itertools import combinations, permutations
 from os import PathLike
 from pathlib import Path
@@ -22,6 +24,7 @@ from rich.progress import Progress
 from matchescu.cli.config import AmbiguityDataConfig
 from matchescu.cli.runtime import get_options, make_absolute_path
 
+from ._pairing import GreedyPairing, Pairing, PairingStrategy
 from ._shared import (
     load_ambiguity_config,
     load_benchmark_data,
@@ -96,6 +99,9 @@ class AmbiguityGenerator:
         fraction of the symmetric pick's target similarity, in [0, 1].
     :param target_links: number of links each bridge gets inside its target
         cluster, applied in the cluster's ambiguity ranking order.
+    :param pairing_strategy: selects the target cluster of each home cluster,
+        for generation and for threshold analysis alike. Defaults to ``None``,
+        meaning :class:`GreedyPairing`.
 
     :ivar bridge_log: one entry per synthesised bridge value (`alpha`,
         `bridge_label`, `home_cluster`, `target_cluster`, `field`, `value`,
@@ -146,6 +152,8 @@ class AmbiguityGenerator:
         alphas: tuple[float, ...] = (0.5,),
         target_floor: float = 0.0,
         target_links: int = 1,
+        *,
+        pairing_strategy: PairingStrategy | None = None,
     ) -> None:
         if not all(0 < alpha < 1 for alpha in alphas):
             raise ValueError("alphas must be in (0, 1)")
@@ -182,6 +190,9 @@ class AmbiguityGenerator:
         self._alphas = tuple(sorted(set(alphas)))
         self._target_floor = target_floor
         self._target_links = target_links
+        self._pairing_strategy = (
+            pairing_strategy if pairing_strategy is not None else GreedyPairing()
+        )
         self._cluster_rankings: dict[int, list[RefId]] = {}
         self.bridge_log: list[dict] = []
         self.link_log: list[dict] = []
@@ -457,46 +468,41 @@ class AmbiguityGenerator:
         ranking.extend(ref_id for _, ref_id in others)
         return ranking
 
-    def _find_closest_rep(self, cluster_reps):
-        cluster_refs = {
+    def _rep_refs(self, cluster_reps) -> dict[int, EntityReference]:
+        return {
             cluster_id: self._id_table.get(ref_id)
             for cluster_id, ref_id in cluster_reps.items()
         }
-        result = {}
-        for cluster_id, ref in cluster_refs.items():
-            self._progress.update(
-                self._main_task,
-                description=f"finding [{cluster_id}] closest cluster rep",
+
+    def _rep_affinity(self, rep_refs, home: int, other: int) -> float:
+        return self._ambiguity_score(rep_refs[home], rep_refs[other])
+
+    def _on_pairing_home(self, cluster_id: int) -> None:
+        self._progress.update(
+            self._main_task,
+            description=f"finding [{cluster_id}] closest cluster rep",
+        )
+        self._progress.advance(self._main_task)
+
+    def _pairings(self, rep_refs, min_score: float | None) -> list[Pairing]:
+        return self._pairing_strategy(
+            list(rep_refs),
+            partial(self._rep_affinity, rep_refs),
+            min_score,
+            self._on_pairing_home,
+        )
+
+    def _find_closest_rep(self, cluster_reps):
+        rep_refs = self._rep_refs(cluster_reps)
+        pairings = self._pairings(rep_refs, self._min_ambiguity)
+        return {
+            pairing.home_cluster_id: (
+                pairing.target_cluster_id,
+                pairing.score,
+                rep_refs[pairing.target_cluster_id],
             )
-            if cluster_id in result:
-                self._progress.advance(self._main_task)
-                continue
-            other_refs = {
-                other_id: other_ref
-                for other_id, other_ref in cluster_refs.items()
-                if other_id != cluster_id and other_id not in result
-            }
-            if len(other_refs) < 1:
-                break
-
-            best_ambiguity = None
-            best_cluster_id = None
-            for other_cluster_id, other_ref in other_refs.items():
-                score = self._ambiguity_score(ref, other_ref)
-                if best_ambiguity is None or score > best_ambiguity:
-                    best_ambiguity = score
-                    best_cluster_id = other_cluster_id
-                elif score == best_ambiguity and other_cluster_id < best_cluster_id:
-                    best_cluster_id = other_cluster_id
-            if self._min_ambiguity is None or best_ambiguity >= self._min_ambiguity:
-                result[cluster_id] = (
-                    best_cluster_id,
-                    best_ambiguity,
-                    other_refs[best_cluster_id],
-                )
-            self._progress.advance(self._main_task)
-
-        return result
+            for pairing in pairings
+        }
 
     @classmethod
     def _ngram_sim(cls, a: str, b: str, n: int = 3) -> float:
@@ -889,21 +895,39 @@ class AmbiguityGenerator:
         the configured operating point, so `min_ambiguity` is ignored here.
 
         .. note::
-            Pairing is greedy and runs over home clusters in cluster-id order.
-            A cluster accepted as a home can no longer be a target, so the
-            best partner of a later home may already be taken, and the last
-            homes in the order may get no pairing at all. The scores are
-            therefore the scores of this greedy pairing, not each cluster's
+            The scores come from the configured pairing strategy. With the
+            default :class:`GreedyPairing`, homes are processed in cluster-id
+            order and a cluster accepted as a home can no longer be a target,
+            so a later home's best partner may already be taken and the last
+            home may get no pairing at all. The scores are therefore the
+            scores of the pairing the strategy makes, not each cluster's
             globally best score.
 
         :returns: one score per paired home cluster, in cluster-id order.
         """
-        cluster_reps = self._get_cluster_representatives()
-        saved = self._min_ambiguity
-        self._min_ambiguity = None  # disable filtering: keep every pairing
-        pairings = self._find_closest_rep(cluster_reps)
-        self._min_ambiguity = saved
-        return [score for _, score, _ in pairings.values()]
+        rep_refs = self._rep_refs(self._get_cluster_representatives())
+        return [pairing.score for pairing in self._pairings(rep_refs, None)]
+
+    def bridge_counts(self, min_scores: Sequence[float | None]) -> list[int]:
+        """Count how many bridges would be produced at each threshold.
+
+        Threshold analysis needs the number of bridges a run with
+        ``min_ambiguity = t`` would actually generate. Counting pairing scores
+        at or above ``t`` is not enough: a home rejected by the threshold
+        stays available as a target, which changes the pairings of later
+        homes. Each threshold therefore gets its own pairing run, and the
+        cost grows linearly with the number of thresholds.
+
+        .. note::
+            Counts are not necessarily monotonic in the threshold: raising it
+            can free a target that a later home then pairs with.
+
+        :param min_scores: thresholds to evaluate, each standing in for
+            `min_ambiguity`; ``None`` means no threshold.
+        :returns: one bridge count per threshold, in the same order.
+        """
+        rep_refs = self._rep_refs(self._get_cluster_representatives())
+        return [len(self._pairings(rep_refs, t)) for t in min_scores]
 
     def __call__(self) -> dict[
         float,

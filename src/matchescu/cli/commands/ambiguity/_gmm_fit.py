@@ -170,14 +170,3 @@ class GmmFit:
         if total == 0:
             return -0.5
         return genuine / total - 0.5
-
-    def bridge_count(self, scores: list[float]) -> int:
-        """Return how many of the given scores qualify as bridge scores.
-
-        The ``>=`` comparison mirrors the threshold sweep: a score exactly at
-        the threshold still yields a bridge.
-
-        :param scores: ambiguity scores to classify against `threshold`.
-        :returns: number of qualifying scores; 0 when `threshold` exceeds all.
-        """
-        return sum(1 for score in scores if score >= self.threshold)

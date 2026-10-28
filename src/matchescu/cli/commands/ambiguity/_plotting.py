@@ -12,6 +12,7 @@ def render_threshold_plot(
     all_frames: list[pl.DataFrame],
     all_fits: list[GmmFit],
     all_scores: list[list[float]],
+    all_bridges: list[int],
     out_path: str | PathLike,
 ) -> None:
     """Render the threshold-vs-bridge-count sweep as one panel per dataset.
@@ -26,10 +27,11 @@ def render_threshold_plot(
     the panel titles rather than in any exported data.
 
     :param all_frames: per-dataset sweep frames, index-aligned with the other
-        two collections.
+        collections.
     :param all_fits: per-dataset fits supplying the marked thresholds.
-    :param all_scores: per-dataset best-pairing scores defining the action
-        region and the annotated bridge counts.
+    :param all_scores: per-dataset pairing scores defining the action region.
+    :param all_bridges: per-dataset number of bridges generation would
+        produce at the fitted threshold; shown in the threshold annotation.
     :param out_path: destination image path; the figure is written as PNG at
         300 dpi and closed before returning.
     """
@@ -39,7 +41,9 @@ def render_threshold_plot(
     if n == 1:
         axes = [axes]
 
-    for ax, df, fit, scores in zip(axes, all_frames, all_fits, all_scores):
+    for ax, df, fit, scores, bridge_at_theta in zip(
+        axes, all_frames, all_fits, all_scores, all_bridges
+    ):
         dataset_name = df["dataset"][0]
         thresholds = df["threshold"].to_list()
         counts = df["bridge_count"].to_list()
@@ -53,7 +57,6 @@ def render_threshold_plot(
         x_hi = float(scores_arr.max()) + 1.0
         ax.set_xlim(x_lo, x_hi)
 
-        bridge_at_theta = fit.bridge_count(scores)
         ann = f"θ={fit.threshold:.2f}\nb={bridge_at_theta}"
         ax.annotate(
             ann,
