@@ -382,22 +382,6 @@ direction from input order. Cross-attention should make that easier. A good
 dataset therefore puts direction into the *order* of the pair. It must not
 let a model find direction another way.
 
-**Evidence behind the recipe** (multiclass matcher,
-`models/multiclass/directionality-analysis` in the matchescu workspace):
-
-- At `alpha = 0.5` the model did not learn direction on fodors (direction AUC about 0.54 to 0.60, experiments 05 and
-  07).
-- On fodors, plain text similarity reached a direction AUC of 0.906 at
-  `alpha = 0.8` (experiment 07). A symmetric model can read that, so it does
-  not test order.
-- The model's order-sensitivity metric `p_dir_auc_y2_vs_y1` peaked near
-  `alpha = 0.7` and fell at higher alphas, while other direction metrics kept
-  rising (experiment 05). At high alpha the model can rely on how similar
-  the texts are instead of their order.
-- The model told ordinary matches from one-way pairs with AUC 0.92 to 0.96 on
-  fodors (experiment 07). Some of that may come from spotting bridges rather
-  than reading direction.
-
 **What "optimal" means here.** Among the alphas where
 
 1. the pair text carries some direction but plain similarity does not solve
@@ -424,7 +408,7 @@ cross-attention.
    [workflow](#workflow-for-a-new-dataset), steps 5 and 6.
 3. **Decide per dataset.**
 
-   | Outcome                                              | Meaning                                         | Action |
+   | Outcome                                              | Meaning                                         | Action | 
          |------------------------------------------------------|-------------------------------------------------|--------|
    | `selected` and `surface_auc_gap > 0`                 | Order carries direction.                        | Generate `[0.5, alpha_star]`. |
    | `selected` and `surface_auc_gap ≤ 0`                 | Direction is in similarity only, not in order.  | Do not use the dataset to test order learning. |
