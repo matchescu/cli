@@ -1,3 +1,4 @@
+import warnings
 from os import PathLike
 from pathlib import Path
 from typing import Any
@@ -12,7 +13,7 @@ from polars import DataFrame
 from matchescu.cli.runtime import get_options
 
 from ._generate import AmbiguityGenerator
-from ._gmm_fit import GmmFit
+from ._gmm_fit import GmmFit, InsufficientScoresError
 from ._plotting import render_gmm_fit_plot, render_threshold_plot
 from ._shared import (
     load_ambiguity_config,
@@ -293,17 +294,25 @@ def analyse_ambiguity(
             target_floor=target_floor,
             target_links=target_links,
         )
-        sweep_df, gmm_fit, scores = analyse_threshold(
-            analysis_start_value,
-            analysis_step_count,
-            analysis_step_size,
-            data,
-            generator,
-            gmm_restarts=gmm_restarts,
-        )
+        try:
+            sweep_df, gmm_fit, scores = analyse_threshold(
+                analysis_start_value,
+                analysis_step_count,
+                analysis_step_size,
+                data,
+                generator,
+                gmm_restarts=gmm_restarts,
+            )
+        except InsufficientScoresError as err:
+            warnings.warn(f"skipping {data.name}: {err}")
+            continue
         analysis_frames.append(sweep_df)
         analysis_fits.append(gmm_fit)
         analysis_scores.append(scores)
+
+    if not analysis_frames:
+        warnings.warn("no dataset could be analysed; nothing written")
+        return
 
     plot_path = Path(plot_dir)
     plot_path.mkdir(parents=True, exist_ok=True)

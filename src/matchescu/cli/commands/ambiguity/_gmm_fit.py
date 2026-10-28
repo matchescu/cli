@@ -7,6 +7,17 @@ from scipy.stats import norm
 from sklearn.mixture import GaussianMixture
 
 
+class InsufficientScoresError(ValueError):
+    """Signal that a score population is too small for a two-component fit.
+
+    A two-component mixture needs at least as many scores as components.
+    Datasets with very few clusters produce fewer pairing scores than that,
+    so this is an expected outcome of analysing real data rather than a
+    programming error. A dedicated type lets callers skip such datasets
+    while every other failure still propagates.
+    """
+
+
 @dataclass
 class GmmFit:
     """Result of fitting a two-component Gaussian mixture to ambiguity scores.
@@ -42,6 +53,7 @@ class GmmFit:
 
     BAYES_OPTIMAL: ClassVar[str] = "bayes_optimal"
     MEAN_MIDPOINT: ClassVar[str] = "mean_midpoint"
+    COMPONENT_COUNT: ClassVar[int] = 2
 
     threshold: float
     mu_genuine: float
@@ -71,10 +83,21 @@ class GmmFit:
             the highest log-likelihood automatically. Defaults to 50.
         :returns: the resolved fit, with `threshold` and `boundary_type`
             populated and every component parameter unrounded.
+        :raises InsufficientScoresError: when there are fewer scores than
+            mixture components; the check runs before fitting, so it replaces
+            the opaque error ``GaussianMixture`` would raise.
         """
+        if len(scores) < cls.COMPONENT_COUNT:
+            raise InsufficientScoresError(
+                f"{len(scores)} pairing score(s) found, "
+                f"at least {cls.COMPONENT_COUNT} are needed"
+            )
         X = np.array(scores).reshape(-1, 1)
         gmm = GaussianMixture(
-            n_components=2, covariance_type="full", n_init=n_init, random_state=0
+            n_components=cls.COMPONENT_COUNT,
+            covariance_type="full",
+            n_init=n_init,
+            random_state=0,
         )
         gmm.fit(X)
 
