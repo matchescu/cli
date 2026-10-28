@@ -7,7 +7,6 @@ import polars as pl
 from rich.progress import MofNCompleteColumn, Progress, TimeElapsedColumn
 from tensorboard.backend.event_processing import event_accumulator
 
-from matchescu.cli._cmd_group import matchescu
 from matchescu.cli.config import EvaluationConfig, JSONConfig
 from matchescu.cli.runtime import get_options, make_absolute_path
 
@@ -240,6 +239,3 @@ class PlotTensorboard(click.Command):
                     output_dir / f"fig_{model_config.name}_{ds_name}_training.png"
                 )
                 figure.write_image(output_path, scale=4)
-
-
-matchescu.add_command(PlotTensorboard())

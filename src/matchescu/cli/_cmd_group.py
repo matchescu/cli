@@ -2,6 +2,7 @@ from pathlib import Path
 
 import click
 
+from .commands import PlotTensorboard, ambiguity, evaluate
 from .runtime import CommonCliOptions
 
 
@@ -25,3 +26,8 @@ from .runtime import CommonCliOptions
 def matchescu(ctx: click.Context, verbose: bool, root_dir: Path):
     root_dir = Path(root_dir).absolute()
     ctx.obj = CommonCliOptions(verbose=verbose, root_dir=root_dir)
+
+
+matchescu.add_command(ambiguity, "ambiguity")
+matchescu.add_command(evaluate, "evaluate")
+matchescu.add_command(PlotTensorboard(), "plot-tensorboard")

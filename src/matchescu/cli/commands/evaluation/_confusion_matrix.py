@@ -11,7 +11,7 @@ from matchescu.cli.config import EvaluationConfig, new_benchmark_data_factory
 from matchescu.cli.data import load_comparison_space
 from matchescu.cli.runtime import get_options, make_absolute_path
 
-from ._cmd_group import EvalOptions, evaluate
+from ._eval_opts import EvalOptions
 from ._input_order import InputOrder, validate_input_order_option
 
 _LABEL_NAMES = {
@@ -54,7 +54,7 @@ def _prepare_labels(
     return dataset_matcher_data
 
 
-@evaluate.command("confusion-matrix")
+@click.command("confusion-matrix")
 @click.option(
     "-R",
     "--reference-graph-dir",
@@ -83,7 +83,7 @@ def _prepare_labels(
     help="input order to evaluate the matcher in (specify up to 3)",
 )
 @click.pass_context
-def main(
+def evaluate_confusion_matrix(
     ctx: click.Context,
     graph_root_dir: str | os.PathLike,
     output_file: str | os.PathLike,

@@ -1,9 +1,16 @@
 from pathlib import Path
 
+import pytest
+
 from matchescu.cli.config import AmbiguityConfig, JSONConfig
 from matchescu.cli.config._config import AmbiguityDataConfig
 
 CLI_ROOT = Path(__file__).parent.parent
+
+
+@pytest.fixture
+def ambiguity_config_path(config_dir):
+    return config_dir / "ambiguity-config.json"
 
 
 def test_secondary_features_parses_from_camel_case_json_key():
@@ -23,12 +30,8 @@ def test_secondary_features_parses_from_camel_case_json_key():
     assert sut.secondary_features == ["year"]
 
 
-def test_musicbrainz_entry_uses_year_as_secondary_feature():
-    sut = (
-        JSONConfig(CLI_ROOT / "ambiguity-config.json", AmbiguityConfig)
-        .load()
-        .config_obj
-    )
+def test_musicbrainz_entry_uses_year_as_secondary_feature(ambiguity_config_path):
+    sut = JSONConfig(ambiguity_config_path, AmbiguityConfig).load().config_obj
 
     musicbrainz = next(
         i for i in sut.input_data if "musicbrainz" in i.dataset.directory
@@ -36,12 +39,8 @@ def test_musicbrainz_entry_uses_year_as_secondary_feature():
     assert musicbrainz.secondary_features == ["year"]
 
 
-def test_other_dataset_entries_have_no_secondary_features():
-    sut = (
-        JSONConfig(CLI_ROOT / "ambiguity-config.json", AmbiguityConfig)
-        .load()
-        .config_obj
-    )
+def test_other_dataset_entries_have_no_secondary_features(ambiguity_config_path):
+    sut = JSONConfig(ambiguity_config_path, AmbiguityConfig).load().config_obj
 
     non_musicbrainz = [
         i for i in sut.input_data if "musicbrainz" not in i.dataset.directory

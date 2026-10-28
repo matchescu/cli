@@ -14,7 +14,7 @@ from matchescu.cli.data import load_comparison_space
 from matchescu.cli.models import new_matcher
 from matchescu.cli.runtime import get_options, make_absolute_path
 
-from ._cmd_group import EvalOptions, evaluate
+from ._eval_opts import EvalOptions
 from ._input_order import InputOrder, validate_input_order_option
 
 RESULT_SCHEMA_OVERRIDES = {
@@ -99,7 +99,7 @@ def _add_both(
     return _add_reverse(g, matcher, x, y, record)
 
 
-@evaluate.command("matching")
+@click.command("matching")
 @click.option(
     "-R",
     "--reference-graph-dir",
@@ -126,7 +126,7 @@ def _add_both(
     help="input order to evaluate the matcher in (specify up to 3)",
 )
 @click.pass_context
-def main(
+def evaluate_matching(
     ctx: click.Context,
     reference_graph_dir: str | os.PathLike,
     stats_csv_path: str | os.PathLike,

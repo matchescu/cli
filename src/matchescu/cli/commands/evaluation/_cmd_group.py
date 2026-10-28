@@ -1,20 +1,19 @@
 import os
-from dataclasses import asdict, dataclass, field
-from typing import Generic
+from dataclasses import asdict
 
 import click
 
-from matchescu.cli._cmd_group import matchescu
-from matchescu.cli.config import EvaluationConfig, JSONConfig, TConfig
-from matchescu.cli.runtime import CommonCliOptions, get_options, make_absolute_path
+from matchescu.cli.config import EvaluationConfig, JSONConfig
+from matchescu.cli.runtime import get_options, make_absolute_path
+
+from ._asymmetry import AsymmetryCommand
+from ._clustering import evaluate_clustering
+from ._confusion_matrix import evaluate_confusion_matrix
+from ._eval_opts import EvalOptions
+from ._matching import evaluate_matching
 
 
-@dataclass(frozen=True)
-class EvalOptions(CommonCliOptions, Generic[TConfig]):
-    config: TConfig | None = field(default=None)
-
-
-@matchescu.group("evaluate")
+@click.group("evaluate")
 @click.option(
     "-f",
     "--config-file",
@@ -31,3 +30,9 @@ def evaluate(ctx: click.Context, config_file: str | os.PathLike):
     config_path = make_absolute_path(config_file, options.root_dir)
     cfg = JSONConfig(config_path, EvaluationConfig).load()
     ctx.obj = EvalOptions(config=cfg.config_obj, **asdict(options))
+
+
+evaluate.add_command(AsymmetryCommand())
+evaluate.add_command(evaluate_clustering)
+evaluate.add_command(evaluate_confusion_matrix)
+evaluate.add_command(evaluate_matching)

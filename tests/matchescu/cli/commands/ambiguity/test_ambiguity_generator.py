@@ -1,6 +1,6 @@
 import pytest
 
-from matchescu.cli.commands._ambiguity_generator import AmbiguityGenerator
+from matchescu.cli.commands.ambiguity._generate import AmbiguityGenerator
 
 _HOME_CLUSTER_ID = 1
 _PROX_CLUSTER_ID = 2

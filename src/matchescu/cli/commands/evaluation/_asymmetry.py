@@ -16,7 +16,7 @@ from matchescu.cli.models import new_matcher
 from matchescu.cli.runtime import get_options, make_absolute_path
 
 from ...config._config import AnyMatcherConfig
-from ._cmd_group import EvalOptions, evaluate
+from ._eval_opts import EvalOptions
 
 os.environ["DISABLE_TQDM"] = "true"
 
@@ -149,7 +149,3 @@ class AsymmetryCommand(click.Command):
                 dataframes.append(matcher_df)
         concatenated = polars.concat(dataframes, how="vertical", strict=True)
         concatenated.write_csv(output_dir / "all.csv", include_header=True)
-
-
-# Register the command with the evaluate group
-evaluate.add_command(AsymmetryCommand())

@@ -28,7 +28,6 @@ from scipy.optimize import brentq
 from scipy.stats import norm
 from sklearn.mixture import GaussianMixture
 
-from matchescu.cli._cmd_group import matchescu
 from matchescu.cli.config import AmbiguityConfig, JSONConfig, new_benchmark_data_factory
 from matchescu.cli.runtime import get_options, make_absolute_path
 
@@ -1330,7 +1329,7 @@ def _generate_amb_datasets(
         )
 
 
-@matchescu.command("ambiguity-generator")
+@click.command("generate")
 @click.option(
     "-c",
     "--config-file",
@@ -1431,7 +1430,7 @@ def _generate_amb_datasets(
     help="How many links each bridge gets inside its target cluster",
 )
 @click.pass_context
-def main(
+def generate_ambiguous_datasets(
     ctx: Context,
     config_file: str | PathLike,
     output_dir: str | PathLike,

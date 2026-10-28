@@ -1,0 +1,75 @@
+{
+  "inputData": [
+    {
+      "dataset": {
+        "type": "csv",
+        "directory": "./data/original/affiliationstrings",
+        "sources": [
+          {
+            "fileName": "affiliationstrings_ids.csv",
+            "traits": [
+              {
+                "type": "string",
+                "keys": ["affil1"]
+              }
+            ],
+            "idCol": "id1"
+          }
+        ],
+        "pairwiseMapping": {
+          "fileName": "affiliationstrings_mapping.csv",
+          "leftIdCol": 0,
+          "rightIdCol": 1,
+          "hasHeader": false
+        }
+      },
+      "ambiguityTargets": ["affil1"],
+      "minAmbiguity": 1.1968568105369097
+    },
+    {
+      "dataset": {
+        "type": "csv",
+        "directory": "./data/original/musicbrainz-20k",
+        "sources": [
+          {
+            "fileName": "musicbrainz-20-A01.csv.dapo",
+            "traits": [
+              {
+                "type": "string",
+                "keys": [
+                  "title",
+                  "length",
+                  "artist",
+                  "album",
+                  "language",
+                  "number",
+                  "year"
+                ]
+              }
+            ],
+            "idCol": "TID",
+            "sourceCol": "SourceID"
+          }
+        ],
+        "pairwiseMapping": {
+          "fileName": "ideal_mapping.csv",
+          "leftIdCol": 0,
+          "leftSourceCol": 1,
+          "rightIdCol": 2,
+          "rightSourceCol": 3,
+          "hasHeader": true
+        },
+        "clusterMapping": {
+          "fileName": "musicbrainz-20-A01.csv.dapo",
+          "idCol": "TID",
+          "sourceCol": "SourceID",
+          "labelCol": "CID",
+          "hasHeader": true
+        }
+      },
+      "ambiguityTargets": ["title", "artist", "album"],
+      "minAmbiguity": 5.115546809395748,
+      "secondaryFeatures": ["year"]
+    }
+  ]
+}
