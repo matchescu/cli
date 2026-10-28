@@ -19,6 +19,9 @@ class GenerationSettings:
     :ivar target_floor: minimum target similarity, as a fraction of the
         symmetric pick's target similarity.
     :ivar target_links: links each bridge gets inside its target cluster.
+    :ivar max_length_ratio: highest bridge-value length, in tokens, as a
+        multiple of the mean length of the two blended values; ``None``
+        disables the limit.
     """
 
     dataset_name: str
@@ -28,3 +31,4 @@ class GenerationSettings:
     alphas: tuple[float, ...]
     target_floor: float
     target_links: int
+    max_length_ratio: float | None = None

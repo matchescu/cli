@@ -1,4 +1,5 @@
 import csv
+from dataclasses import replace
 
 import pytest
 
@@ -54,6 +55,13 @@ def test_identity_row_holds_generation_settings(identity, tmp_path):
         "ambiguity_targets": "name,city",
         "secondary_features": "",
     }
+
+
+def test_identity_row_holds_max_length_ratio(identity, settings, tmp_path):
+    configured = replace(settings, max_length_ratio=1.2)
+    row = GenerationIdentity(configured, 0.65, identity.naming, identity.paths)
+
+    assert row.as_row(tmp_path)["max_length_ratio"] == 1.2
 
 
 def test_identity_row_paths_are_relative_to_root(identity, tmp_path):

@@ -62,6 +62,25 @@ def test_bridge_synthesises_target_property_value(
     assert bridge["name"] not in ("John Doe", "Jane Doe")
 
 
+def test_bridge_value_respects_max_length_ratio(make_generator, id_table, clusters):
+    _sut = make_generator(id_table, clusters, max_length_ratio=1.0)
+    bridge, *_ = _run(_sut)
+
+    assert len(bridge["name"].split()) <= 2
+
+
+def test_length_ratio_keeps_shortest_candidates_when_none_fit(monkeypatch):
+    monkeypatch.setattr(
+        AmbiguityGenerator,
+        "_candidates",
+        staticmethod(lambda *_: {"Aa Bb Cc", "Dd Ee Ff Gg"}),
+    )
+
+    scored = AmbiguityGenerator._score_pool("aa bb", "cc dd", [], max_length_ratio=1.0)
+
+    assert [candidate for candidate, *_ in scored] == ["Aa Bb Cc"]
+
+
 def test_bridge_joined_to_home_cluster(
     make_generator, id_table, clusters, bridge_ref_id
 ):
@@ -300,6 +319,7 @@ def test_settings_report_effective_generation_parameters(id_table, clusters):
         alphas=(0.8, 0.5),
         target_floor=0.25,
         target_links=2,
+        max_length_ratio=1.2,
         dataset_name="ds",
     )
 
@@ -311,6 +331,7 @@ def test_settings_report_effective_generation_parameters(id_table, clusters):
         alphas=(0.5, 0.8),
         target_floor=0.25,
         target_links=2,
+        max_length_ratio=1.2,
     )
 
 
@@ -343,6 +364,7 @@ def test_from_config_uses_dataset_entry_settings(id_table, clusters):
             "alphas": [0.8, 0.5],
             "targetFloor": 0.25,
             "targetLinks": 2,
+            "maxLengthRatio": 1.2,
         }
     )
     data = SimpleNamespace(
@@ -360,4 +382,5 @@ def test_from_config_uses_dataset_entry_settings(id_table, clusters):
         alphas=(0.5, 0.8),
         target_floor=0.25,
         target_links=2,
+        max_length_ratio=1.2,
     )

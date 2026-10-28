@@ -119,6 +119,9 @@ class AmbiguityDataConfig(ConfigModel):
     :ivar target_floor: minimum target similarity, as a fraction of the
         symmetric pick's target similarity, in [0, 1].
     :ivar target_links: links each bridge gets inside its target cluster.
+    :ivar max_length_ratio: highest bridge-value length, in tokens, as a
+        multiple of the mean length of the two blended values; ``None``
+        disables the limit.
     :ivar analysis: analysis settings of this dataset; ``None`` falls back to
         the top-level block.
     """
@@ -130,6 +133,7 @@ class AmbiguityDataConfig(ConfigModel):
     alphas: list[Alpha] = Field(min_length=1)
     target_floor: float = Field(default=0.0, ge=0, le=1)
     target_links: int = Field(default=1, ge=1)
+    max_length_ratio: float | None = Field(default=None, ge=1)
     analysis: AnalysisConfig | None = None
 
 

@@ -50,6 +50,7 @@ class GenerationIdentity:
             "secondary_features": self.LIST_SEPARATOR.join(
                 self.settings.secondary_features
             ),
+            "max_length_ratio": self.settings.max_length_ratio,
             "undirected_path": str(self.paths.undirected.relative_to(root)),
             "directed_path": str(self.paths.directed.relative_to(root)),
         }

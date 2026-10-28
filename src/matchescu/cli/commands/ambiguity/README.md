@@ -56,7 +56,9 @@ fields are built from the two representatives:
 - fields present on only one representative are left out;
 - ambiguity targets that differ get a synthesised blend of the two values;
 - secondary features are copied from the home representative;
-- other differing strings become empty, other differing values become null.
+- other differing strings become empty, other differing values become null;
+- candidates longer than `maxLengthRatio ×` the mean token count of the two
+  values are dropped; when none fit, the shortest candidates are kept.
 
 **Labels.** `0` no match, `1` match in both directions, `2` one-way match.
 Every pair inside a cluster is labelled 1. Each bridge gets
@@ -203,6 +205,7 @@ an `inputData` list with one entry per dataset. Only `inputData` is required.
 | `alphas`            | required | both    | One or more values in (0, 1). `analyse` searches them; `generate` writes one variant per value.                                                                       |
 | `targetFloor`       | `0.0`    | both    | In [0, 1]. See [Concepts](#concepts).                                                                                                                                 |
 | `targetLinks`       | `1`      | both    | One-way pairs per bridge, at least 1. Values above 1 add `_kN` to output names.                                                                                       |
+| `maxLengthRatio`    | none     | both    | Highest bridge-value length, in tokens, as a multiple of the mean length of the two blended values. At least 1. Omit it to disable the limit.                        |
 | `analysis`          | none     | analyse | Replaces the whole top-level `analysis` block for this dataset. Omitted sub-blocks take their defaults, not the top-level values.                                       |
 
 ### Profiling (`profiling`, all datasets)
@@ -419,7 +422,7 @@ cross-attention.
    | `selected` and `surface_auc_gap ≤ 0`                 | Direction is in similarity only, not in order.  | Do not use the dataset to test order learning. |
    | `no_feasible_alpha`, separability below 0.2 for every alpha | The text carries no direction.          | Add fields to `ambiguityTargets`, or drop the dataset. |
    | `no_feasible_alpha`, content AUC above 0.9 for every alpha | Similarity alone solves direction.       | Search a finer grid near 0.5, for example 0.50 to 0.62 in steps of 0.02. |
-   | `no_undetectable_alpha`                              | Bridges are easy to spot at every feasible alpha. | Read `detect_best_feature`. No setting is known to fix this. Drop the dataset, or raise `maxDetectAuc` and record that you did. |
+   | `no_undetectable_alpha`                              | Bridges are easy to spot at every feasible alpha. | Read `detect_best_feature`. When it is `n_tokens` or `n_chars`, set `maxLengthRatio` and run again. Otherwise drop the dataset, or raise `maxDetectAuc` and record that you did. |
 
 4. **Check the chosen variant.**
     - `largest_bridge_component_split_load` must be at most 1.

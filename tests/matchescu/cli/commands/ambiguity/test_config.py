@@ -107,6 +107,19 @@ def test_target_floor_outside_unit_interval_raises(make_entry, floor):
         make_entry(targetFloor=floor)
 
 
+def test_max_length_ratio_parses_from_camel_case_json_key(make_entry):
+    assert make_entry(maxLengthRatio=1.2).max_length_ratio == 1.2
+
+
+def test_max_length_ratio_defaults_to_disabled(make_entry):
+    assert make_entry().max_length_ratio is None
+
+
+def test_max_length_ratio_below_one_raises(make_entry):
+    with pytest.raises(ValidationError, match="max_length_ratio|maxLengthRatio"):
+        make_entry(maxLengthRatio=0.9)
+
+
 def test_target_links_below_one_raises(make_entry):
     with pytest.raises(ValidationError, match="target_links|targetLinks"):
         make_entry(targetLinks=0)

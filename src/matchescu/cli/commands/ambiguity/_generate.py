@@ -94,6 +94,10 @@ class AmbiguityGenerator:
         fraction of the symmetric pick's target similarity, in [0, 1].
     :param target_links: number of links each bridge gets inside its target
         cluster, applied in the cluster's ambiguity ranking order.
+    :param max_length_ratio: highest bridge-value length, in tokens, as a
+        multiple of the mean length of the two blended values. Candidates
+        over the limit are dropped; when none fit, the shortest candidates
+        are kept. ``None`` disables the limit.
     :param pairing_strategy: selects the target cluster of each home cluster,
         for generation and for threshold analysis alike. Defaults to ``None``,
         meaning :class:`GreedyPairing`.
@@ -103,9 +107,10 @@ class AmbiguityGenerator:
         dataset only. Integer labels do not use it.
 
     :raises ValueError: when any alpha lies outside (0, 1), `target_floor`
-        lies outside [0, 1], `target_links` is below 1, secondary features
-        overlap the ambiguity targets, or secondary features use the reserved
-        reference properties (`source`, `target`, `target_cluster_id`).
+        lies outside [0, 1], `target_links` is below 1, `max_length_ratio`
+        is below 1, secondary features overlap the ambiguity targets, or
+        secondary features use the reserved reference properties (`source`,
+        `target`, `target_cluster_id`).
     """
 
     _SYMMETRIC_ALPHA: ClassVar[float] = 0.5
@@ -141,6 +146,7 @@ class AmbiguityGenerator:
         alphas: tuple[float, ...] = (0.5,),
         target_floor: float = 0.0,
         target_links: int = 1,
+        max_length_ratio: float | None = None,
         *,
         pairing_strategy: PairingStrategy | None = None,
         dataset_name: str = "",
@@ -151,6 +157,8 @@ class AmbiguityGenerator:
             raise ValueError("target_floor must be in [0, 1]")
         if target_links < 1:
             raise ValueError("target_links must be >= 1")
+        if max_length_ratio is not None and max_length_ratio < 1:
+            raise ValueError("max_length_ratio must be >= 1")
         self._mapping_gt = mapping_gt
         self._id_table = id_table
         self._cluster_count = len(clusters)
@@ -180,6 +188,7 @@ class AmbiguityGenerator:
         self._alphas = tuple(sorted(set(alphas)))
         self._target_floor = target_floor
         self._target_links = target_links
+        self._max_length_ratio = max_length_ratio
         self._pairing_strategy = (
             pairing_strategy if pairing_strategy is not None else GreedyPairing()
         )
@@ -193,6 +202,7 @@ class AmbiguityGenerator:
             alphas=self._alphas,
             target_floor=target_floor,
             target_links=target_links,
+            max_length_ratio=max_length_ratio,
         )
 
     @property
@@ -227,6 +237,7 @@ class AmbiguityGenerator:
             alphas=tuple(input_cfg.alphas),
             target_floor=input_cfg.target_floor,
             target_links=input_cfg.target_links,
+            max_length_ratio=input_cfg.max_length_ratio,
             dataset_name=data.name,
         )
 
@@ -492,9 +503,12 @@ class AmbiguityGenerator:
         }
 
     @classmethod
-    def _score_pool(cls, val_a, val_b, bridge_terms) -> list[tuple[str, float, float]]:
+    def _score_pool(
+        cls, val_a, val_b, bridge_terms, max_length_ratio: float | None = None
+    ) -> list[tuple[str, float, float]]:
         # (candidate, home, target) sorted by candidate; candidates equal to
-        # an input (case-insensitive) score (0.0, 0.0).
+        # an input (case-insensitive) score (0.0, 0.0). A length ratio keeps
+        # only candidates within the limit, or the shortest ones when none fit.
         words = list(
             dict.fromkeys(w for w in val_a.split() + val_b.split() if len(w) > 2)
         )
@@ -512,6 +526,10 @@ class AmbiguityGenerator:
                         weighted_similarity(c, val_b),
                     )
                 )
+        if max_length_ratio is not None and out:
+            limit = max_length_ratio * (len(val_a.split()) + len(val_b.split())) / 2
+            shortest = min(len(row[0].split()) for row in out)
+            out = [row for row in out if len(row[0].split()) <= max(limit, shortest)]
         return sorted(out)
 
     @staticmethod
@@ -754,7 +772,9 @@ class AmbiguityGenerator:
         return ambiguous_refs, bridge_logs
 
     def _bridged_values(self, val_a: str, val_b: str, origin: dict) -> dict:
-        scored = self._score_pool(val_a, val_b, self._bridge_terms)
+        scored = self._score_pool(
+            val_a, val_b, self._bridge_terms, self._max_length_ratio
+        )
         sym = self._pick(scored, self._SYMMETRIC_ALPHA)
         floor = self._target_floor * sym[3] if sym else 0.0
         return {
