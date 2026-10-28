@@ -1,5 +1,6 @@
 import click
 
+from ._analyse import analyse_ambiguity
 from ._generate import generate_ambiguous_datasets
 
 
@@ -11,3 +12,4 @@ def ambiguity():
 
 
 ambiguity.add_command(generate_ambiguous_datasets, "generate")
+ambiguity.add_command(analyse_ambiguity, "analyse")

@@ -1,5 +1,6 @@
 from ._config import (
     AmbiguityConfig,
+    AmbiguityDataConfig,
     AnyMatcherConfig,
     DeepMatcherConfig,
     DittoConfig,
@@ -10,6 +11,7 @@ from ._manager import JSONConfig, TConfig
 
 __all__ = [
     "AmbiguityConfig",
+    "AmbiguityDataConfig",
     "AnyMatcherConfig",
     "DeepMatcherConfig",
     "DittoConfig",

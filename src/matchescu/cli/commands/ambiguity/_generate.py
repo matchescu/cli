@@ -1,35 +1,33 @@
 import re
 import warnings
 from collections import Counter
-from dataclasses import dataclass
 from difflib import SequenceMatcher
 from itertools import combinations, permutations
 from os import PathLike
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import ClassVar
 
 import click
-import matplotlib.pyplot as plt
-import numpy as np
 import polars as pl
-import seaborn as sns
 from click import Context
 from matchescu.matching.evaluation.data.benchmark import CsvBenchmarkData
 from matchescu.reference_store.id_table import IdTable
-from matchescu.typing import (
-    EntityReference,
-)
+from matchescu.typing import EntityReference
 from matchescu.typing import (
     EntityReferenceIdentifier as RefId,
 )
 from polars import DataFrame
 from rich.progress import Progress
-from scipy.optimize import brentq
-from scipy.stats import norm
-from sklearn.mixture import GaussianMixture
 
-from matchescu.cli.config import AmbiguityConfig, JSONConfig, new_benchmark_data_factory
+from matchescu.cli.config import AmbiguityDataConfig
 from matchescu.cli.runtime import get_options, make_absolute_path
+
+from ._shared import (
+    load_ambiguity_config,
+    load_benchmark_data,
+    parse_alphas,
+    parse_secondary_features,
+)
 
 try:
     from rapidfuzz.distance import Levenshtein
@@ -40,44 +38,79 @@ except ImportError:
         Levenshtein = None
 
 
-DIR = Path("./data/affiliationstrings/")
 TOP_N_BRIDGE_TERMS: int = 10
 
 type ComparisonData = tuple[RefId, RefId]
 
 
 def _ref_id_sort_key(ref_id: RefId):
-    """Stable, process-independent sort key for ``EntityReferenceIdentifier``."""
     return (ref_id.source, ref_id.label)
 
 
 def _orient(a: RefId, b: RefId, bridges: set[RefId]) -> ComparisonData:
-    """Bridges always on the right, matching the canonical (target, bridge) key."""
     return (b, a) if a in bridges and b not in bridges else (a, b)
 
 
-@dataclass
-class GmmFit:
-    """Parameters of the two-component GMM fit used to derive the ambiguity threshold.
+class AmbiguityGenerator:
+    """Generates ambiguous bridge records that straddle neighbouring clusters.
 
-    ``threshold`` is the exact (unrounded) score at which the posterior probability
-    of the genuine-overlap component equals 0.5 (the Bayes-optimal decision boundary),
-    or the midpoint of the two component means when the components are not separable.
-    The ``boundary_type`` field distinguishes the two cases so that degenerate fits
-    can be reported honestly rather than silently.
+    For every cluster the generator nominates a representative (the member
+    most ambiguous with respect to its cluster mates), pairs each
+    representative with the closest other-cluster representative by ambiguity
+    score, and synthesises a bridge record whose property values blend the
+    two: distinct from both originals, yet claimed plausibly by either
+    cluster. Cluster ground truth is derived from the input clusters, with
+    every bridge joined to its home cluster and linked inside its target
+    cluster.
+
+    Values land at three distinct levels: dataset configuration supplies the
+    ambiguity targets, secondary features and the minimum-ambiguity filter;
+    CLI options override secondary features and supply blend parameters; the
+    remaining knobs tune candidate generation (`alphas` for the harmonic-mean
+    pick, `target_floor` and `target_links` for bridge linking).
+
+    :param id_table: references of the input dataset; bridges are never
+        stored here, so the id table stays bridge-free by construction.
+    :param mapping_gt: true-match mapping of the input dataset; accepted to
+        mirror the benchmark data interface, currently unused — the generator
+        derives ground truth from `clusters` instead.
+    :param clusters: ground-truth clusters of the input dataset; they receive
+        ids 1..N in a deterministic sort order, and a bridge's reserved
+        `target_cluster_id` property holds one of these ids.
+    :param ambiguity_target_properties: properties permitted to receive
+        synthesised bridged values; properties outside this list either copy
+        unchanged or degrade to ``None``/empty, per type. Empty means no
+        property will be bridged.
+    :param secondary_features: property names copied verbatim from the home
+        representative to every bridge, giving bridges authoritative
+        non-target information.
+    :param string_degradation_patterns: regex fragments removed before
+        comparing string values; ``None`` applies the house patterns covering
+        country names and business/academic suffixes.
+    :param min_ambiguity: minimum pairing score for a bridge to be generated;
+        ``None`` disables the filter entirely (the mode threshold analysis
+        relies on).
+    :param alphas: blend weights for the asymmetric harmonic-mean pick; each
+        must lie in (0, 1). Every weight yields one bridge-record variant.
+    :param target_floor: minimum similarity to the target reference, as a
+        fraction of the symmetric pick's target similarity, in [0, 1].
+    :param target_links: number of links each bridge gets inside its target
+        cluster, applied in the cluster's ambiguity ranking order.
+
+    :ivar bridge_log: one entry per synthesised bridge value (`alpha`,
+        `bridge_label`, `home_cluster`, `target_cluster`, `field`, `value`,
+        `sim_home`, `sim_target`, `share_home`, `fallback`), for post-hoc
+        inspection of the candidate-selection behaviour.
+    :ivar link_log: one entry per bridge target link (alpha, bridge label,
+        target cluster, target label, link rank and the pairing's ambiguity
+        score), exposing the ambiguity of the links ground truth asserts.
+
+    :raises ValueError: when any alpha lies outside (0, 1), `target_floor`
+        lies outside [0, 1], `target_links` is below 1, secondary features
+        overlap the ambiguity targets, or secondary features use the reserved
+        reference properties (`source`, `target`, `target_cluster_id`).
     """
 
-    threshold: float
-    mu_genuine: float
-    sigma_genuine: float
-    pi_genuine: float
-    mu_superficial: float
-    sigma_superficial: float
-    pi_superficial: float
-    boundary_type: str  # "bayes_optimal" | "mean_midpoint"
-
-
-class AmbiguityGenerator:
     _RESERVED_REF_PROPERTIES: ClassVar[frozenset[str]] = frozenset(
         {"source", "target", "target_cluster_id"}
     )
@@ -153,6 +186,52 @@ class AmbiguityGenerator:
         self.bridge_log: list[dict] = []
         self.link_log: list[dict] = []
 
+    @classmethod
+    def from_config(
+        cls,
+        input_cfg: AmbiguityDataConfig,
+        data: CsvBenchmarkData,
+        *,
+        secondary_features: list[str] | None,
+        alphas: tuple[float, ...],
+        target_floor: float,
+        target_links: int,
+    ) -> "AmbiguityGenerator":
+        """Build a generator for one configured benchmark dataset.
+
+        Generator settings live at two levels: the dataset configuration
+        (ambiguity targets, secondary features, minimum-ambiguity filter) and
+        CLI parameters (secondary features, alphas, floor, links). Both the
+        `analyse` and the `generate` commands need this merge, so it lives
+        here — the CLI value always wins when provided.
+
+        :param input_cfg: one `AmbiguityConfig.input_data` entry supplying the
+            ambiguity targets, dataset-level secondary features and the
+            minimum-ambiguity filter.
+        :param data: materialised benchmark dataset; supplies the id table,
+            untouched true matches and ground-truth clusters.
+        :param secondary_features: CLI-level feature names; ``None`` defers to
+            the dataset configuration via the `or` fallback.
+        :param alphas: harmonic-mean blend weights; the (0, 1) range is
+            validated by the constructor and reported as `ValueError`.
+        :param target_floor: minimum similarity to the target reference, as a
+            fraction of the symmetric pick's target similarity, in [0, 1].
+        :param target_links: number of links each bridge gets inside its
+            target cluster; must be at least 1.
+        :returns: the generator configured for exactly this dataset.
+        """
+        return cls(
+            data.id_table,
+            data.true_matches,
+            data.compute_clusters(),
+            input_cfg.ambiguity_targets,
+            secondary_features=secondary_features or input_cfg.secondary_features,
+            min_ambiguity=input_cfg.min_ambiguity,
+            alphas=alphas,
+            target_floor=target_floor,
+            target_links=target_links,
+        )
+
     def _validate_secondary_features(self) -> None:
         if self._secondary_features & self._target_properties:
             raise ValueError(
@@ -166,13 +245,6 @@ class AmbiguityGenerator:
             )
 
     def _build_bridge_terms(self) -> list[str]:
-        """Build dataset-specific bridge terms using TF/IDF on the id table.
-
-        Steps:
-        1. Tokenise every string field value; skip stopwords.
-        2. Count term frequency (TF) per document and document frequency (DF).
-        3. Rank by TF-IDF ratio; return the top TOP_N_BRIDGE_TERMS terms.
-        """
         try:
             from stopwords import get_stopwords
 
@@ -206,7 +278,6 @@ class AmbiguityGenerator:
         if not tf or not df:
             return []
 
-        len(tf)
         # Score = (total TF across corpus) / DF  — rewards common-but-not-ubiquitous terms
         scores: dict[str, float] = {}
         for doc_tf in tf.values():
@@ -216,7 +287,19 @@ class AmbiguityGenerator:
         ranked = sorted(scores, key=lambda t: scores[t], reverse=True)
         return [t for t in ranked[:TOP_N_BRIDGE_TERMS]]
 
-    def degrade_str(self, input_str):
+    def degrade_str(self, input_str) -> str:
+        """Remove all degradation patterns from a property value.
+
+        Degraded references keep enough of both originals to be claimed by
+        either cluster; removing the configured suffixes early makes values
+        comparable across dataset vocabularies. Removal artefacts (repeated
+        commas, stray edge commas, collapsed spaces) are normalised
+        afterwards.
+
+        :param input_str: property value to degrade.
+        :returns: the value with every pattern removed case-insensitively and
+            commas/whitespace normalised.
+        """
         result = input_str
         for pattern in self._degradation_patterns:
             result = re.sub(pattern, "", result, flags=re.IGNORECASE)
@@ -278,27 +361,13 @@ class AmbiguityGenerator:
         return 1.0 - (distance / max_len)
 
     def _ambiguity_score(self, x: EntityReference, y: EntityReference) -> float:
-        """Compute how ambiguous the result of combining ``x`` and ``y`` would be.
-
-        The algorithm for computing ambiguity uses all of the property names provided
-        by the user to compare x and y. For each property value it applies the
-        following rules:
-
-        - identical property values get +2.0
-        - 2.0 * inv(edit distance) if property values are not identical
-        - property is not a string gets -0.5
-        - type mismatch gets -1.0
-        - property does not exist in ``x`` or ``y`` other gets -0.5
-
-        :param x: first entity reference
-        :param y: second entity reference
-        :params property_names: variable array of property names to consider when
-        computing ambiguity; these are the properties that would likely yield the
-        ambiguous values.
-
-        :return: an ambiguity score: the higher, the more chances of being able to
-        generate an ambiguous entity reference.
-        """
+        # Identical values are ideal bridging material (+2.0); differing
+        # strings on target properties add at most 2x inverted edit
+        # similarity, while differences on non-target properties lose
+        # information (-0.5), as do values present on one side only (which
+        # the bridge must remove as differentiators) and type mismatches or
+        # non-string differences (-1.0) — material the matching model would
+        # discriminate easily.
         score = 0.0
 
         x_dict = x.as_dict()
@@ -431,7 +500,6 @@ class AmbiguityGenerator:
 
     @classmethod
     def _ngram_sim(cls, a: str, b: str, n: int = 3) -> float:
-        """Character n-gram Jaccard similarity."""
         a, b = a.lower(), b.lower()
         if len(a) < n or len(b) < n:
             sa, sb = set(a.replace(" ", "")), set(b.replace(" ", ""))
@@ -442,13 +510,11 @@ class AmbiguityGenerator:
 
     @classmethod
     def _tok_sim(cls, a: str, b: str) -> float:
-        """Word-level Jaccard similarity."""
         wa, wb = set(a.lower().split()), set(b.lower().split())
         return len(wa & wb) / max(len(wa | wb), 1)
 
     @classmethod
     def _weighted_similarity(cls, a: str, b: str) -> float:
-        """Weighted composite: 40 % char-ngram, 30 % token, 30 % sequence."""
         return (
             0.4 * cls._ngram_sim(a, b)
             + 0.3 * cls._tok_sim(a, b)
@@ -457,7 +523,6 @@ class AmbiguityGenerator:
 
     @classmethod
     def _score(cls, cand: str, a: str, b: str) -> tuple[float, float, float]:
-        """(harmonic_mean, sim_a, sim_b) — 0 if cand equals either input."""
         if cand.lower() in (a.lower(), b.lower()):
             return 0.0, 0.0, 0.0
         sa, sb = cls._weighted_similarity(cand, a), cls._weighted_similarity(cand, b)
@@ -466,8 +531,8 @@ class AmbiguityGenerator:
 
     @classmethod
     def _score_pool(cls, val_a, val_b, bridge_terms) -> list[tuple[str, float, float]]:
-        # returns (candidate, home, target) sorted by candidate.
-        # mirrors _score: candidates equal to an input (case-insensitive) get (0.0, 0.0)."""
+        # (candidate, home, target) sorted by candidate, mirroring _score:
+        # candidates equal to an input (case-insensitive) score (0.0, 0.0).
         words = list(
             dict.fromkeys(w for w in val_a.split() + val_b.split() if len(w) > 2)
         )
@@ -489,11 +554,12 @@ class AmbiguityGenerator:
 
     @staticmethod
     def _pick(scored, alpha: float, floor: float = 0.0):
-        # returns the argmax of the weighted harmonic mean
-        # s_h*s_t/(s_t*alpha + s_h*(1-alpha))
-        # when alpha = 0.5 -> 2*s_h*s_t / (s_h + s_t)
-        # returns (candidate, h, home, target)
-        # if nothing qualifies -> None
+        # Weighted harmonic mean of home and target similarity:
+        # 2*s_h*s_t / (s_t*alpha + s_h*(1-alpha)), alpha in (0, 1);
+        # alpha = 0.5 degenerates to the symmetric mean. The target floor
+        # keeps candidates that still resemble the target cluster.
+        # Returns (candidate, harmonic_mean, sim_home, sim_target); None when
+        # nothing clears the floor.
         best, best_h = None, -1.0
         for c, sa, sb in scored:
             if sb < floor:
@@ -516,7 +582,6 @@ class AmbiguityGenerator:
 
     @classmethod
     def _cpfx(cls, a: str, b: str) -> str:
-        """Longest common case-insensitive prefix, preserving case from *a*."""
         i = 0
         for x, y in zip(a.lower(), b.lower()):
             if x != y:
@@ -526,7 +591,6 @@ class AmbiguityGenerator:
 
     @classmethod
     def _blend(cls, a: str, b: str) -> str:
-        """Alternate characters: even indices from *a*, odd from *b*."""
         return "".join(
             (
                 (a[i] if i % 2 == 0 else b[i])
@@ -547,71 +611,66 @@ class AmbiguityGenerator:
         ub = [w for w in wb if w.lower() not in cs]
         base = " ".join(common)
 
-        pool: set[str] = set()
-
-        def _add(s: str) -> None:
-            s = " ".join(s.split())
-            if s and s != a and s != b:
-                pool.add(s)
+        raw_pool: list[str] = []
 
         # 1. Base + every prefix-truncation of each unique word
         if base:
-            _add(base)
+            raw_pool.append(base)
         for w in ua + ub:
             for k in range(1, len(w)):
-                _add(f"{base} {w[:k]}")
+                raw_pool.append(f"{base} {w[:k]}")
 
         # 2. Pair unique words -> common-prefix extensions / blend / mid-cut
         for wa_ in ua:
             for wb_ in ub:
                 cp = cls._cpfx(wa_, wb_)
                 if cp:
-                    _add(f"{base} {cp}")
+                    raw_pool.append(f"{base} {cp}")
                     for e in range(1, max(len(wa_), len(wb_)) - len(cp) + 1):
                         for w in (wa_, wb_):
                             if len(cp) + e <= len(w):
-                                _add(f"{base} {w[: len(cp) + e]}")
-                _add(f"{base} {cls._blend(wa_, wb_)}")
+                                raw_pool.append(f"{base} {w[: len(cp) + e]}")
+                raw_pool.append(f"{base} {cls._blend(wa_, wb_)}")
                 mid = (len(wa_) + len(wb_)) // 2
                 if mid:
-                    _add(f"{base} {wa_[:mid]}")
-                    _add(f"{base} {wb_[:mid]}")
+                    raw_pool.append(f"{base} {wa_[:mid]}")
+                    raw_pool.append(f"{base} {wb_[:mid]}")
 
         # 3. Cross-structural mixing (comma-separated hybrids)
         if ua and ub:
-            _add(f"{', '.join(ua)}, {b}")
-            _add(f"{', '.join(ub)}, {a}")
+            raw_pool.append(f"{', '.join(ua)}, {b}")
+            raw_pool.append(f"{', '.join(ub)}, {a}")
             for x in ua[:2]:
                 for y in ub[:2]:
-                    _add(f"{x}, {' '.join(common + [y])}")
-                    _add(f"{y}, {' '.join(common + [x])}")
+                    raw_pool.append(f"{x}, {' '.join(common + [y])}")
+                    raw_pool.append(f"{y}, {' '.join(common + [x])}")
 
         # 4. Word substitution inside each input's frame
         for i, w in enumerate(wa):
             for ww in wb:
                 if w.lower() != ww.lower():
-                    _add(" ".join(wa[:i] + [ww] + wa[i + 1 :]))
+                    raw_pool.append(" ".join(wa[:i] + [ww] + wa[i + 1 :]))
         for i, w in enumerate(wb):
             for ww in wa:
                 if w.lower() != ww.lower():
-                    _add(" ".join(wb[:i] + [ww] + wb[i + 1 :]))
+                    raw_pool.append(" ".join(wb[:i] + [ww] + wb[i + 1 :]))
 
         # 5. Subsets & (small) permutations of the word union
         union = list(dict.fromkeys(wa + wb))
         cap = min(len(union) + 1, 5)
         for r in range(1, cap):
             for c in combinations(union, r):
-                _add(" ".join(c))
+                raw_pool.append(" ".join(c))
             if len(union) <= 6:
                 for p in permutations(union, r):
-                    _add(" ".join(p))
+                    raw_pool.append(" ".join(p))
 
         # 6. Domain bridge terms
         for t in bridge:
             if base:
-                _add(f"{base} {t}")
+                raw_pool.append(f"{base} {t}")
             for w in (ua + ub)[:2]:
-                _add(f"{w} {t}")
+                raw_pool.append(f"{w} {t}")
 
         # 7. Containment: gradual extension of the shorter string
         lo_a, lo_b = a.lower(), b.lower()
@@ -619,9 +678,15 @@ class AmbiguityGenerator:
             longer, shorter = (a, b) if len(a) >= len(b) else (b, a)
             extra = longer[len(shorter) :].strip()
             for k in range(1, len(extra) + 1):
-                _add(f"{shorter} {extra[:k]}")
+                raw_pool.append(f"{shorter} {extra[:k]}")
 
-        return pool
+        # Whitespace-normalise each candidate, dropping empties and anything
+        # identical to the original values.
+        return {
+            normalized
+            for c in raw_pool
+            if (normalized := " ".join(c.split())) and normalized not in (a, b)
+        }
 
     @classmethod
     def _generate_ambiguous_text(
@@ -818,7 +883,21 @@ class AmbiguityGenerator:
         return cluster_gt, directed_gt, undirected_gt
 
     def best_pairing_scores(self) -> list[float]:
-        """Best ambiguity score per cluster, independent of the threshold."""
+        """Return the score of every pairing made without the threshold filter.
+
+        Threshold analysis needs a score population that does not depend on
+        the configured operating point, so `min_ambiguity` is ignored here.
+
+        .. note::
+            Pairing is greedy and runs over home clusters in cluster-id order.
+            A cluster accepted as a home can no longer be a target, so the
+            best partner of a later home may already be taken, and the last
+            homes in the order may get no pairing at all. The scores are
+            therefore the scores of this greedy pairing, not each cluster's
+            globally best score.
+
+        :returns: one score per paired home cluster, in cluster-id order.
+        """
         cluster_reps = self._get_cluster_representatives()
         saved = self._min_ambiguity
         self._min_ambiguity = None  # disable filtering: keep every pairing
@@ -835,6 +914,20 @@ class AmbiguityGenerator:
             dict[ComparisonData, int],
         ],
     ]:
+        """Generate every alpha variant of the ambiguous bridge records.
+
+        Streams the three stages (representative nomination, closest-cluster
+        pairing, bridge synthesis) through the shared rich progress bar, then
+        derives the per-alpha ground truth from clusters and the bridges.
+
+        :returns: one entry per alpha weight; each value is the 4-tuple
+            ``(bridges, cluster_gt, directed_gt, undirected_gt)``. Bridges are
+            the synthesised references and are intentionally absent from the
+            id table; `cluster_gt` binds every reference, bridges included, to
+            its cluster; `directed_gt` marks intra-cluster pairs with 1 and
+            ``(target, bridge)`` pairs with 2 (directional match); the
+            undirected map mirrors the same pairs with 1.
+        """
         self._progress.start()
         try:
             cluster_reps = self._get_cluster_representatives()
@@ -858,408 +951,9 @@ class AmbiguityGenerator:
         finally:
             self._progress.stop()
 
-
-def _compute_drops(bridge_counts: list[float]) -> list[tuple[int, int, float]]:
-    """Return (prev_idx, curr_idx, drop_magnitude) for every consecutive fall."""
-    return [
-        (i - 1, i, bridge_counts[i - 1] - bridge_counts[i])
-        for i in range(1, len(bridge_counts))
-        if bridge_counts[i] < bridge_counts[i - 1]
-    ]
-
-
-def _find_gmm_highlight(df: pl.DataFrame, fit: GmmFit) -> dict[str, dict]:
-    """Locate the bridge count at the GMM threshold on the sweep frame."""
-    gmm_theta = fit.threshold
-    thresholds = df["threshold"].to_list()
-    counts = df["bridge_count"].to_list()
-
-    closest_idx = int(np.argmin([abs(t - gmm_theta) for t in thresholds]))
-
-    return {
-        "gmm": {
-            "threshold": gmm_theta,
-            "bridge_count": counts[closest_idx],
-            "extra": (
-                fit.boundary_type if fit.boundary_type != "bayes_optimal" else None
-            ),
-        }
-    }
-
-
-def _plot_dataset_line(ax: plt.Axes, df: pl.DataFrame, color: str, label: str) -> None:
-    thresholds = df["threshold"].to_list()
-    counts = df["bridge_count"].to_list()
-
-    ax.plot(thresholds, counts, color=color, linewidth=2, alpha=0.5, label=label)
-
-
-_HIGHLIGHT_STYLES: dict[str, dict] = {
-    "gmm": {"marker": "D", "label": "GMM threshold"},
-}
-
-
-def _build_highlight_legend(ax: plt.Axes) -> None:
-    """Append criterion-shape entries to the existing legend."""
-    shape_handles = [
-        plt.Line2D(
-            [0],
-            [0],
-            marker=style["marker"],
-            color="grey",
-            linestyle="None",
-            markersize=7,
-            label=style["label"],
-        )
-        for style in _HIGHLIGHT_STYLES.values()
-    ]
-    existing_handles, existing_labels = ax.get_legend_handles_labels()
-    ax.legend(
-        handles=existing_handles + shape_handles,
-        labels=existing_labels + [s["label"] for s in _HIGHLIGHT_STYLES.values()],
-        title="Dataset / threshold",
-        frameon=True,
-        fontsize=9,
-    )
-
-
-def _plot_threshold_highlights(
-    ax: plt.Axes,
-    highlights: dict[str, dict],
-    color: str,
-    y_max: float,
-    dataset_idx: int,
-) -> None:
-    """Draw vertical lines, axis markers, and threshold+bridge-count labels."""
-    for criterion_idx, (criterion, style) in enumerate(_HIGHLIGHT_STYLES.items()):
-        info = highlights[criterion]
-        x = float(info["threshold"])
-
-        ax.axvline(x=x, color=color, linestyle="--", linewidth=0.8, alpha=0.6)
-
-        # Separate markers vertically: one row per criterion.
-        marker_y = -(0.06 + criterion_idx * 0.05) * y_max
-        ax.plot(
-            x,
-            marker_y,
-            marker=style["marker"],
-            color=color,
-            markersize=7,
-            clip_on=False,
-            zorder=5,
-        )
-
-        label_parts = [f"θ={x:.2f}", f"b={info['bridge_count']}"]
-        if info["extra"]:
-            label_parts.append(f"({info['extra']})")
-        label = "\n".join(label_parts)
-
-        # Stack by both dataset and criterion to avoid any overlap.
-        n_criteria = len(_HIGHLIGHT_STYLES)
-        label_y = -(0.09 + (dataset_idx * n_criteria + criterion_idx) * 0.07) * y_max
-        ax.annotate(
-            label,
-            xy=(x, 0),
-            xytext=(x, label_y),
-            color=color,
-            fontsize=7,
-            ha="center",
-            va="top",
-            clip_on=False,
-            annotation_clip=False,
-        )
-
-
-def _render_threshold_plot(
-    all_frames: list[pl.DataFrame],
-    all_fits: list[GmmFit],
-    all_scores: list[list[float]],
-    out_path: Path,
-) -> None:
-    """Render the threshold-vs-bridge-count sweep as a 1×N faceted grid, one panel
-    per dataset with its own x/y scale and the x-axis cropped to the action region
-    ([min(scores)−1, max(scores)+1]). The GMM threshold is marked per panel.
-    Supplemental artifact — matplotlib titles carry the dataset name + boundary type."""
-    sns.set_theme(style="white", font_scale=1.0)
-    n = len(all_frames)
-    _fig, axes = plt.subplots(1, n, figsize=(3 * n, 3.2), sharey=False)
-    if n == 1:
-        axes = [axes]
-
-    for ax, df, fit, scores in zip(axes, all_frames, all_fits, all_scores):
-        dataset_name = df["dataset"][0]
-        thresholds = df["threshold"].to_list()
-        counts = df["bridge_count"].to_list()
-
-        ax.plot(thresholds, counts, color="#1f77b4", linewidth=1.8)
-        ax.axvline(x=fit.threshold, color="black", linestyle="--", linewidth=1.0)
-
-        # Crop x-axis to the action region.
-        scores_arr = np.array(scores, dtype=float)
-        x_lo = float(scores_arr.min()) - 1.0
-        x_hi = float(scores_arr.max()) + 1.0
-        ax.set_xlim(x_lo, x_hi)
-
-        # Annotation: θ and bridge count at θ, placed at the top.
-        bridge_at_theta = sum(1 for s in scores if s >= fit.threshold)
-        ann = f"θ={fit.threshold:.2f}\nb={bridge_at_theta}"
-        ax.annotate(
-            ann,
-            xy=(fit.threshold, counts[0] if counts else 0),
-            xytext=(0.5, 0.92),
-            textcoords="axes fraction",
-            ha="center",
-            fontsize=7,
-            color="black",
-        )
-
-        ax.set_title(f"{dataset_name} ({fit.boundary_type})", fontsize=9)
-        ax.set_xlabel("θ", fontsize=8)
-        if ax is axes[0]:
-            ax.set_ylabel("Bridge count", fontsize=8)
-        ax.tick_params(labelsize=7)
-        sns.despine(ax=ax)
-
-    plt.tight_layout()
-    plt.savefig(out_path, dpi=300)
-    plt.close()
-
-
-def _render_gmm_fit_plot(
-    scores: list[float], fit: GmmFit, dataset_name: str, out_path: Path
-) -> None:
-    """Render the histogram of best-pairing scores with the two fitted Gaussian
-    density curves and the threshold marked, one figure per dataset."""
-    sns.set_theme(style="white", font_scale=1.1)
-    _fig, ax = plt.subplots(figsize=(7, 4))
-
-    scores_arr = np.array(scores, dtype=float)
-    lo = float(min(scores_arr.min(), fit.mu_superficial - 3 * fit.sigma_superficial))
-    hi = float(max(scores_arr.max(), fit.mu_genuine + 3 * fit.sigma_genuine))
-    x = np.linspace(lo, hi, 400)
-
-    ax.hist(
-        scores_arr,
-        bins="auto",
-        density=True,
-        color="lightgrey",
-        edgecolor="white",
-        label="best-pairing scores",
-    )
-
-    genuine_density = fit.pi_genuine * norm.pdf(x, fit.mu_genuine, fit.sigma_genuine)
-    superficial_density = fit.pi_superficial * norm.pdf(
-        x, fit.mu_superficial, fit.sigma_superficial
-    )
-
-    ax.plot(x, genuine_density, color="#2ca02c", linewidth=2, label="genuine overlap")
-    ax.plot(
-        x,
-        superficial_density,
-        color="#d62728",
-        linewidth=2,
-        label="superficial overlap",
-    )
-    ax.axvline(
-        x=fit.threshold,
-        color="black",
-        linestyle="--",
-        linewidth=1.2,
-        label=f"θ={fit.threshold:.2f}",
-    )
-
-    ax.set_xlabel("Ambiguity score")
-    ax.set_ylabel("Density")
-    ax.legend(fontsize=8, frameon=True)
-    sns.despine()
-    plt.tight_layout()
-    plt.savefig(out_path, dpi=300)
-    plt.close()
-
-
-def _write_methodology_csv(rows: list[dict], out_path: Path) -> None:
-    """Write the per-dataset methodology summary CSV used to populate the paper's
-    ambiguity-injection table."""
-    df = pl.DataFrame(rows)
-    df.write_csv(out_path, include_header=True)
-
-
-def _fit_gmm_threshold(scores: list[float], n_init: int = 50) -> GmmFit:
-    """Fit a two-component Gaussian Mixture Model to ``scores`` and return the
-    Bayes-optimal decision boundary together with the fitted component parameters.
-
-    The scores are modelled as a mixture of two populations: *genuine* overlap
-    (high-mean component, pairs whose representatives meaningfully resemble each
-    other) and *superficial* overlap (low-mean component, pairs whose resemblance
-    is only on the surface). The threshold is the score at which the posterior
-    probability of belonging to the genuine component equals 0.5.
-
-    When the two components are not separable (the posterior never reaches 0.5
-    between the means), the threshold falls back to the midpoint of the two means
-    and ``boundary_type`` is set to ``"mean_midpoint"`` so the degenerate fit is
-    reportable.
-
-    Multiple random restarts (``n_init``) are used; ``GaussianMixture`` keeps the
-    run with the highest log-likelihood automatically.
-    """
-    X = np.array(scores).reshape(-1, 1)
-
-    gmm = GaussianMixture(
-        n_components=2, covariance_type="full", n_init=n_init, random_state=0
-    )
-    gmm.fit(X)
-
-    means = gmm.means_.flatten()
-    high_idx = int(np.argmax(means))  # genuine = higher mean
-    low_idx = 1 - high_idx  # superficial = lower mean
-
-    w_genuine = gmm.weights_[high_idx]
-    mu_genuine = float(means[high_idx])
-    sigma_genuine = float(np.sqrt(gmm.covariances_[high_idx, 0, 0]))
-
-    w_superficial = gmm.weights_[low_idx]
-    mu_superficial = float(means[low_idx])
-    sigma_superficial = float(np.sqrt(gmm.covariances_[low_idx, 0, 0]))
-
-    def posterior_diff(x):
-        """P(genuine | x) - 0.5, zero when the two components are equally likely."""
-        p_genuine = w_genuine * norm.pdf(x, mu_genuine, sigma_genuine)
-        p_superficial = w_superficial * norm.pdf(x, mu_superficial, sigma_superficial)
-        total = p_genuine + p_superficial
-        if total == 0:
-            return -0.5
-        return (p_genuine / total) - 0.5
-
-    lo, hi = min(mu_superficial, mu_genuine), max(mu_superficial, mu_genuine)
-    try:
-        threshold = float(brentq(posterior_diff, lo, hi))
-        boundary_type = "bayes_optimal"
-    except ValueError:
-        threshold = (mu_superficial + mu_genuine) / 2.0
-        boundary_type = "mean_midpoint"
-
-    return GmmFit(
-        threshold=threshold,
-        mu_genuine=mu_genuine,
-        sigma_genuine=sigma_genuine,
-        pi_genuine=float(w_genuine),
-        mu_superficial=mu_superficial,
-        sigma_superficial=sigma_superficial,
-        pi_superficial=float(w_superficial),
-        boundary_type=boundary_type,
-    )
-
-
-def _analyse_optimum_threshold(
-    analysis_start_value: float,
-    analysis_step_count: float,
-    analysis_step_size: float,
-    data: CsvBenchmarkData,
-    introduce_ambiguity: AmbiguityGenerator,
-    gmm_restarts: int = 50,
-) -> tuple[pl.DataFrame, GmmFit, list[float]]:
-    print(f"analysing {data.name}")
-    scores = introduce_ambiguity.best_pairing_scores()
-    threshold_range = np.arange(
-        analysis_start_value,
-        analysis_step_size * (analysis_step_count + 1),
-        analysis_step_size,
-    )
-    gmm_fit = _fit_gmm_threshold(scores, n_init=gmm_restarts)
-
-    display_name = {
-        "affiliationstrings": "affiliations",
-        "cora1": "cora",
-        "fodors_zagat_nophone": "fodors-zagat-nophone",
-        "geographicalSettelments": "geographic-settlements",
-    }.get(data.name, data.name)
-    cluster_count = len(data.compute_clusters())
-
-    return (
-        pl.DataFrame(
-            data=[
-                {
-                    "dataset": display_name,
-                    "threshold": t,
-                    "bridge_count": sum(1 for s in scores if s >= t),
-                    "cluster_count": cluster_count,
-                }
-                for t in threshold_range
-            ]
-        ),
-        gmm_fit,
-        scores,
-    )
-
-
-def _write_analysis(
-    analysis_frames: list[DataFrame],
-    analysis_fits: list[GmmFit],
-    analysis_scores: list[list[float | int]],
-    methodology_rows: list[dict[Any, Any]],
-    plot_dir: Path,
-) -> None:
-    """Write out the ambiguity analysis of the data frames."""
-    if not analysis_frames:
-        return
-
-    plot_path = Path(plot_dir)
-    plot_path.mkdir(parents=True, exist_ok=True)
-
-    for df, fit, scores in zip(analysis_frames, analysis_fits, analysis_scores):
-        dataset_name = df["dataset"][0]
-        bell_path = plot_path / f"gmm_fit_{dataset_name}.png"
-        _render_gmm_fit_plot(scores, fit, dataset_name, bell_path)
-
-        bridge_count_at_theta = sum(1 for s in scores if s >= fit.threshold)
-        methodology_rows.append(
-            {
-                "dataset": dataset_name,
-                "cluster_count": df["cluster_count"][0],
-                "bridge_count_at_theta": int(bridge_count_at_theta),
-                "bridge_count_per_cluster": round(
-                    bridge_count_at_theta / df["cluster_count"][0], 2
-                ),
-                "theta": round(fit.threshold, 2),
-                "mu_genuine": round(fit.mu_genuine, 2),
-                "sigma_genuine": round(fit.sigma_genuine, 2),
-                "pi_genuine": round(fit.pi_genuine, 2),
-                "mu_superficial": round(fit.mu_superficial, 2),
-                "sigma_superficial": round(fit.sigma_superficial, 2),
-                "pi_superficial": round(fit.pi_superficial, 2),
-                "boundary_type": fit.boundary_type,
-            }
-        )
-
-    _write_methodology_csv(methodology_rows, plot_path / "ambiguity_methodology.csv")
-
-    # Write the full threshold sweep (structural theta-sensitivity) for the
-    # supplemental data package.
-    pl.concat(analysis_frames).write_csv(
-        plot_path / "ambiguity_threshold_sweep.csv", include_header=True
-    )
-
-    _render_threshold_plot(
-        analysis_frames,
-        analysis_fits,
-        analysis_scores,
-        plot_path / "threshold_analysis.png",
-    )
-
-
-def _generate_amb_datasets(
-    data: CsvBenchmarkData, ambiguity_generator: AmbiguityGenerator, output_dir: Path
-):
-    """Generate two datasets containing ambiguous bridge records."""
-    results = ambiguity_generator()
-    k_suffix = (
-        f"_k{ambiguity_generator._target_links}"
-        if ambiguity_generator._target_links > 1
-        else ""
-    )
-    for alpha, (bridges, cluster_gt, directed_gt, undirected_gt) in results.items():
-        tag = f"a{round(alpha * 100):03d}"
-        table_ = [
+    @staticmethod
+    def _dataset_ids_frame(data: CsvBenchmarkData, bridges) -> DataFrame:
+        ids_rows = [
             {
                 "id": ref.id.label,
                 "source": str(ref.id.source),
@@ -1271,62 +965,104 @@ def _generate_amb_datasets(
             }
             for ref in [*data.id_table, *bridges]
         ]
-        data_df = pl.DataFrame(table_)
-        clusters_df = pl.DataFrame(
-            [
-                {"id": ref_id.label, "source": ref_id.source, "cluster_id": cluster_id}
-                for cluster_id, ref_ids in sorted(cluster_gt.items())
-                for ref_id in sorted(ref_ids, key=_ref_id_sort_key)
-            ]
-        )
-        directed_df = pl.DataFrame(
-            [
-                {
-                    "left_id": left_id.label,
-                    "left_source": left_id.source,
-                    "right_id": right_id.label,
-                    "right_source": right_id.source,
-                    "label": c,
-                }
-                for (left_id, right_id), c in directed_gt.items()
-            ]
-        )
-        undirected_df = pl.DataFrame(
-            [
-                {
-                    "left_id": left_id.label,
-                    "left_source": left_id.source,
-                    "right_id": right_id.label,
-                    "right_source": right_id.source,
-                    "label": c,
-                }
-                for (left_id, right_id), c in undirected_gt.items()
-            ]
-        )
-        directed_undirected = {
-            f"amb_{data.name}_{tag}{k_suffix}": undirected_df,
-            f"amb_{data.name}_{tag}{k_suffix}_dir": directed_df,
-        }
+        return pl.DataFrame(ids_rows)
 
-        for output_dataset_name, mapping_df in directed_undirected.items():
-            dataset_output_path = output_dir / output_dataset_name
-            dataset_output_path.mkdir(parents=True, exist_ok=True)
-            file_map = {
-                f"{output_dataset_name}_ids.csv": data_df,
-                f"{output_dataset_name}_mapping.csv": mapping_df,
-                f"{output_dataset_name}_cluster_mapping.csv": clusters_df,
+    @staticmethod
+    def _cluster_mapping_frame(cluster_gt) -> DataFrame:
+        cluster_rows = [
+            {"id": ref_id.label, "source": ref_id.source, "cluster_id": cluster_id}
+            for cluster_id, ref_ids in sorted(cluster_gt.items())
+            for ref_id in sorted(ref_ids, key=_ref_id_sort_key)
+        ]
+        return pl.DataFrame(cluster_rows)
+
+    @staticmethod
+    def _mapping_frame(mapping_gt) -> DataFrame:
+        mapping_rows = [
+            {
+                "left_id": left_id.label,
+                "left_source": left_id.source,
+                "right_id": right_id.label,
+                "right_source": right_id.source,
+                "label": c,
             }
-            for name, df in file_map.items():
-                df.write_csv(dataset_output_path / name, include_header=True)
+            for (left_id, right_id), c in mapping_gt.items()
+        ]
+        return pl.DataFrame(mapping_rows)
 
-    if ambiguity_generator.bridge_log:
-        pl.DataFrame(ambiguity_generator.bridge_log).write_csv(
-            output_dir / f"amb_{data.name}_bridge_log.csv", include_header=True
-        )
-    if ambiguity_generator.link_log:
-        pl.DataFrame(ambiguity_generator.link_log).write_csv(
-            output_dir / f"amb_{data.name}{k_suffix}_link_log.csv", include_header=True
-        )
+    def _write_variant(
+        self,
+        data: CsvBenchmarkData,
+        output_dir: Path,
+        prefix: str,
+        bridges,
+        cluster_gt,
+        directed_gt,
+        undirected_gt,
+    ) -> None:
+        data_df = self._dataset_ids_frame(data, bridges)
+        clusters_df = self._cluster_mapping_frame(cluster_gt)
+        variants = {
+            prefix: undirected_gt,
+            f"{prefix}_dir": directed_gt,
+        }
+        for output_dataset_name, mapping_gt in variants.items():
+            variant_path = output_dir / output_dataset_name
+            variant_path.mkdir(parents=True, exist_ok=True)
+            data_df.write_csv(
+                variant_path / f"{output_dataset_name}_ids.csv", include_header=True
+            )
+            self._mapping_frame(mapping_gt).write_csv(
+                variant_path / f"{output_dataset_name}_mapping.csv",
+                include_header=True,
+            )
+            clusters_df.write_csv(
+                variant_path / f"{output_dataset_name}_cluster_mapping.csv",
+                include_header=True,
+            )
+
+    def _write_generation_logs(
+        self, data: CsvBenchmarkData, output_dir: Path, k_suffix: str
+    ) -> None:
+        if self.bridge_log:
+            pl.DataFrame(self.bridge_log).write_csv(
+                output_dir / f"amb_{data.name}_bridge_log.csv", include_header=True
+            )
+        if self.link_log:
+            pl.DataFrame(self.link_log).write_csv(
+                output_dir / f"amb_{data.name}{k_suffix}_link_log.csv",
+                include_header=True,
+            )
+
+    def write_datasets(self, data: CsvBenchmarkData, output_dir: Path) -> None:
+        """Persist the ambiguous dataset variants and the generation logs.
+
+        Each alpha weight produces one undirected and one directed variant of
+        the dataset under its own directory, as an ids/mapping/cluster-mapping
+        CSV triple. The reserved bridging properties (`source`, `target`,
+        `target_cluster_id`) are stripped from the ids CSV — they document the
+        synthesis rather than the published records.
+
+        :param data: benchmark dataset supplying the id table the variants
+            extend.
+        :param output_dir: root directory under which variant directories and
+            the bridge/link log CSVs are written.
+        """
+        results = self()
+        k_suffix = f"_k{self._target_links}" if self._target_links > 1 else ""
+        for alpha, (bridges, cluster_gt, directed_gt, undirected_gt) in results.items():
+            tag = f"a{round(alpha * 100):03d}"
+            prefix = f"amb_{data.name}_{tag}{k_suffix}"
+            self._write_variant(
+                data,
+                output_dir,
+                prefix,
+                bridges,
+                cluster_gt,
+                directed_gt,
+                undirected_gt,
+            )
+        self._write_generation_logs(data, output_dir, k_suffix)
 
 
 @click.command("generate")
@@ -1347,57 +1083,6 @@ def _generate_amb_datasets(
         exists=True, file_okay=False, dir_okay=True, writable=True, resolve_path=True
     ),
     help="root directory where ambiguous datasets corresponding to the configured input datasets are generated",
-)
-@click.option(
-    "--analyse-best-threshold",
-    "is_analysis_mode",
-    type=click.BOOL,
-    default=False,
-    required=False,
-    is_flag=True,
-    help="Run one-factor-at-a-time analysis for the best ambiguity threshold",
-)
-@click.option(
-    "--threshold-analysis-step-count",
-    "analysis_step_count",
-    type=click.FLOAT,
-    default=10.0,
-    required=False,
-    help="How many thresholds to analyse using one-factor-at-a-time",
-)
-@click.option(
-    "--threshold-analysis-step-size",
-    "analysis_step_size",
-    type=click.FLOAT,
-    default=1.0,
-    required=False,
-    help="How large should the difference between consecutive thresholds be for one-factor-at-a-time analysis",
-)
-@click.option(
-    "--threshold-analysis-start-value",
-    "analysis_start_value",
-    type=click.FLOAT,
-    default=0.0,
-    required=False,
-    help="How large should the difference between consecutive thresholds be for one-factor-at-a-time analysis",
-)
-@click.option(
-    "--gmm-restarts",
-    "gmm_restarts",
-    type=click.INT,
-    default=50,
-    required=False,
-    help="Number of random restarts for the Gaussian mixture model fit",
-)
-@click.option(
-    "--plot-dir",
-    "plot_dir",
-    type=click.Path(
-        exists=False, file_okay=False, dir_okay=True, writable=True, resolve_path=True
-    ),
-    default=".",
-    required=False,
-    help="Directory where plots and the methodology CSV are written",
 )
 @click.option(
     "--secondary-features",
@@ -1434,12 +1119,6 @@ def generate_ambiguous_datasets(
     ctx: Context,
     config_file: str | PathLike,
     output_dir: str | PathLike,
-    is_analysis_mode: bool,
-    analysis_step_count: float,
-    analysis_step_size: float,
-    analysis_start_value: float,
-    gmm_restarts: int,
-    plot_dir: str | PathLike,
     secondary_features: str | None,
     alphas: str,
     target_floor: float,
@@ -1447,60 +1126,20 @@ def generate_ambiguous_datasets(
 ):
     """Introduce ambiguous data into existing dataset."""
     root_dir = get_options(ctx).root_dir
-    config: AmbiguityConfig = (
-        JSONConfig(make_absolute_path(config_file, root_dir), AmbiguityConfig)
-        .load()
-        .config_obj
-    )
+    config = load_ambiguity_config(config_file, root_dir)
     output_dir = make_absolute_path(output_dir, root_dir)
-    cli_secondary_features = None
-    if secondary_features:
-        cli_secondary_features = [
-            feature.strip()
-            for feature in secondary_features.split(",")
-            if feature.strip()
-        ]
-    alphas_tuple = tuple(
-        float(part.strip()) for part in alphas.split(",") if part.strip()
-    )
+    cli_secondary_features = parse_secondary_features(secondary_features)
+    alphas_tuple = parse_alphas(alphas)
 
-    analysis_frames: list[pl.DataFrame] = []
-    analysis_fits: list[GmmFit] = []
-    analysis_scores: list[list[float]] = []
-    methodology_rows: list[dict] = []
-    for ds_idx, input_cfg in enumerate(config.input_data):
+    for input_cfg in config.input_data:
         print("processing", input_cfg.dataset.directory)
-        builder = new_benchmark_data_factory(input_cfg.dataset, root_dir)
-        data = builder.load_data().create()
-        amb_generator = AmbiguityGenerator(
-            data.id_table,
-            data.true_matches,
-            data.compute_clusters(),
-            input_cfg.ambiguity_targets,
-            secondary_features=cli_secondary_features or input_cfg.secondary_features,
-            min_ambiguity=input_cfg.min_ambiguity,
+        data = load_benchmark_data(input_cfg, root_dir)
+        generator = AmbiguityGenerator.from_config(
+            input_cfg,
+            data,
+            secondary_features=cli_secondary_features,
             alphas=alphas_tuple,
             target_floor=target_floor,
             target_links=target_links,
         )
-
-        # in analysis mode, only compute the optimal cutoff point at which
-        # realistic bridge records would be hard to generate and move on
-        if is_analysis_mode:
-            sweep_df, gmm_fit, scores = _analyse_optimum_threshold(
-                analysis_start_value,
-                analysis_step_count,
-                analysis_step_size,
-                data,
-                amb_generator,
-                gmm_restarts=gmm_restarts,
-            )
-            analysis_frames.append(sweep_df)
-            analysis_fits.append(gmm_fit)
-            analysis_scores.append(scores)
-        else:
-            _generate_amb_datasets(data, amb_generator, output_dir)
-
-    _write_analysis(
-        analysis_frames, analysis_fits, analysis_scores, methodology_rows, plot_dir
-    )
+        generator.write_datasets(data, output_dir)
