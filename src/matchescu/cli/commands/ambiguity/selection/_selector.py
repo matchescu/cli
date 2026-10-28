@@ -26,12 +26,18 @@ class AlphaSelector:
         """Fail early when the profile will lack the criterion's columns.
 
         :param options: options the sweep rows will be profiled with.
-        :raises ValueError: when the criterion needs a profile option that
-            is switched off.
+        :raises ValueError: when the criterion needs profile options that
+            are switched off; the message names every missing option.
         """
-        required = self.__criterion.REQUIRED_OPTION
-        if required is not None and not getattr(options, required):
-            raise ValueError(f"the alpha criterion needs the {required} option")
+        missing = [
+            name
+            for name in self.__criterion.REQUIRED_OPTIONS
+            if not getattr(options, name)
+        ]
+        if missing:
+            raise ValueError(
+                f"the alpha criterion needs the {', '.join(missing)} option(s)"
+            )
 
     def is_feasible(self, row: SweepRow) -> bool:
         """Return whether a sweep row lies inside the separability bounds."""

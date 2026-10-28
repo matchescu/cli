@@ -16,6 +16,7 @@ class AlphaChoice:
     NO_FEASIBLE_ALPHA: ClassVar[str] = "no_feasible_alpha"
     NO_BAYES_OPTIMAL_FIT: ClassVar[str] = "no_bayes_optimal_fit"
     NO_SURFACE_BASELINE: ClassVar[str] = "no_surface_baseline"
+    NO_UNDETECTABLE_ALPHA: ClassVar[str] = "no_undetectable_alpha"
 
     alpha: float | None
     reason: str

@@ -17,12 +17,12 @@ class AlphaCriterion(Protocol):
 
     :cvar UNAVAILABLE: reason reported when the criterion finds no
         candidate it can rank.
-    :cvar REQUIRED_OPTION: name of the `ProfileOptions` switch the
-        criterion's columns depend on, or ``None``.
+    :cvar REQUIRED_OPTIONS: names of the `ProfileOptions` switches the
+        criterion's columns depend on; empty when it needs none.
     """
 
     UNAVAILABLE: ClassVar[str]
-    REQUIRED_OPTION: ClassVar[str | None]
+    REQUIRED_OPTIONS: ClassVar[tuple[str, ...]]
 
     @classmethod
     def from_settings(cls, settings: "SelectionSettings") -> "AlphaCriterion":
@@ -42,7 +42,7 @@ class SmallestAlpha:
     """The least lopsided bridge text that still carries enough direction."""
 
     UNAVAILABLE: ClassVar[str] = AlphaChoice.NO_FEASIBLE_ALPHA
-    REQUIRED_OPTION: ClassVar[str | None] = None
+    REQUIRED_OPTIONS: ClassVar[tuple[str, ...]] = ()
 
     @classmethod
     def from_settings(cls, settings: "SelectionSettings") -> "SmallestAlpha":
@@ -64,7 +64,7 @@ class GmmBalance:
     """
 
     UNAVAILABLE: ClassVar[str] = AlphaChoice.NO_BAYES_OPTIMAL_FIT
-    REQUIRED_OPTION: ClassVar[str | None] = None
+    REQUIRED_OPTIONS: ClassVar[tuple[str, ...]] = ()
     PI: ClassVar[str] = "margin_pi_resolvable"
     BOUNDARY: ClassVar[str] = "margin_boundary_type"
 
@@ -97,7 +97,7 @@ class SurfaceGap:
     """
 
     UNAVAILABLE: ClassVar[str] = AlphaChoice.NO_SURFACE_BASELINE
-    REQUIRED_OPTION: ClassVar[str | None] = "surface_baseline"
+    REQUIRED_OPTIONS: ClassVar[tuple[str, ...]] = ("surface_baseline",)
     GAP: ClassVar[str] = "surface_auc_gap"
 
     @classmethod
@@ -109,8 +109,48 @@ class SurfaceGap:
         return min(measured, key=lambda row: (-row[self.GAP], row[ALPHA]), default=None)
 
 
+class OrderHeadroom:
+    """The largest surface gap among alphas whose bridges are hard to spot.
+
+    A matcher that spots synthetic records solves the one-way label without
+    reading direction, so alphas whose bridges a shape-only model detects
+    above the cap are excluded. Among the rest, the largest gap between
+    order-aware and swap-invariant surface features wins: that is the
+    direction signal only an order-sensitive architecture can use. Ties go
+    to the smaller alpha.
+
+    :param max_detect_auc: highest bridge detectability (``detect_auc_lr``)
+        an alpha may have; alphas without a detectability value never
+        qualify.
+    """
+
+    UNAVAILABLE: ClassVar[str] = AlphaChoice.NO_UNDETECTABLE_ALPHA
+    REQUIRED_OPTIONS: ClassVar[tuple[str, ...]] = (
+        "surface_baseline",
+        "synthetic_detectability",
+    )
+    DETECTABILITY: ClassVar[str] = "detect_auc_lr"
+
+    def __init__(self, max_detect_auc: float) -> None:
+        self.__max_detect_auc = max_detect_auc
+        self.__surface_gap = SurfaceGap()
+
+    @classmethod
+    def from_settings(cls, settings: "SelectionSettings") -> "OrderHeadroom":
+        return cls(settings.max_detect_auc)
+
+    def __call__(self, feasible: Sequence[SweepRow]) -> SweepRow | None:
+        hidden = [row for row in feasible if self.__is_hidden(row)]
+        return self.__surface_gap(hidden)
+
+    def __is_hidden(self, row: SweepRow) -> bool:
+        detectability = row.get(self.DETECTABILITY)
+        return detectability is not None and detectability <= self.__max_detect_auc
+
+
 ALPHA_CRITERIA: dict[str, type[AlphaCriterion]] = {
     "smallest": SmallestAlpha,
     "gmm-balance": GmmBalance,
     "surface-gap": SurfaceGap,
+    "order-headroom": OrderHeadroom,
 }

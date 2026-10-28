@@ -13,6 +13,7 @@ from polars import DataFrame
 from matchescu.cli.runtime import get_options
 
 from ._alpha_sweep import AlphaSweep, AlphaSweepResult
+from ._config import ThresholdAnalysisConfig
 from ._generate import AmbiguityGenerator
 from ._gmm_fit import GmmFit, InsufficientScoresError
 from ._plotting import (
@@ -20,15 +21,7 @@ from ._plotting import (
     render_gmm_fit_plot,
     render_threshold_plot,
 )
-from ._shared import (
-    load_ambiguity_config,
-    load_benchmark_data,
-    parse_alphas,
-    parse_secondary_features,
-    with_profile_options,
-    with_selection_settings,
-)
-from .profiling import ProfileOptions
+from ._shared import load_ambiguity_config, load_benchmark_data
 from .selection import AlphaSelector, SelectionSettings
 
 _DATASET_DISPLAY_NAMES: dict[str, str] = {
@@ -38,17 +31,13 @@ _DATASET_DISPLAY_NAMES: dict[str, str] = {
     "geographicalSettelments": "geographic-settlements",
 }
 
-DEFAULT_ALPHA_GRID: str = "0.5,0.65,0.8,0.95"
 DISPLAY_DECIMALS: int = 2
 
 
 def analyse_threshold(
-    analysis_start_value: float,
-    analysis_step_count: int,
-    analysis_step_size: float,
+    threshold: ThresholdAnalysisConfig,
     data: CsvBenchmarkData,
     generator: AmbiguityGenerator,
-    gmm_restarts: int = 50,
 ) -> tuple[DataFrame, GmmFit, list[float], int]:
     """Compute the threshold sweep and the GMM-optimal cutoff for one dataset.
 
@@ -63,22 +52,19 @@ def analyse_threshold(
     .. note::
         The pairing runs once for the unfiltered scores and once more for
         every sweep cutoff plus the fitted cutoff, so the scoring cost grows
-        with `analysis_step_count`. The fit runs right after the first run,
-        so a dataset with too few scores fails before the expensive runs.
+        with the step count. The fit runs right after the first run, so a
+        dataset with too few scores fails before the expensive runs.
 
-    :param analysis_start_value: first cutoff of the sweep.
-    :param analysis_step_count: number of cutoffs in the sweep; the sweep has
-        exactly this many cutoffs.
-    :param analysis_step_size: distance between consecutive cutoffs; the
-        sweep spans `[start, start + (analysis_step_count - 1) * step_size]`.
+    :param threshold: the sweep and the mixture fit settings. The sweep has
+        exactly ``step_count`` cutoffs spanning
+        ``[start_value, start_value + (step_count - 1) * step_size]``;
+        ``gmm_restarts`` trades runtime for a more stable decision boundary.
     :param data: dataset whose bridging potential is analysed; supplies the
         cluster count normalising the bridge counts in the sweep frame and
         the display name that reports and plots reuse.
     :param generator: generator built for `data`; its pairing scores are the
         population the mixture is fitted on, and its pairing strategy decides
         the bridge counts. Its own `min_ambiguity` is ignored here.
-    :param gmm_restarts: random restarts for the mixture fit; more restarts
-        trade runtime for a more stable decision boundary.
     :returns: the sweep frame (columns `dataset`, `threshold`, `bridge_count`,
         `cluster_count`; dataset carries the display name), the resolved
         `GmmFit`, the unfiltered pairing scores the fit was made on, and the
@@ -88,9 +74,9 @@ def analyse_threshold(
     """
     print(f"analysing {data.name}")
     scores = generator.best_pairing_scores()
-    gmm_fit = GmmFit.from_scores(scores, n_init=gmm_restarts)
-    threshold_range = analysis_start_value + analysis_step_size * np.arange(
-        analysis_step_count
+    gmm_fit = GmmFit.from_scores(scores, n_init=threshold.gmm_restarts)
+    threshold_range = threshold.start_value + threshold.step_size * np.arange(
+        threshold.step_count
     )
     *sweep_counts, bridges_at_theta = generator.bridge_counts(
         [*threshold_range.tolist(), gmm_fit.threshold]
@@ -238,38 +224,6 @@ def write_report(
     help="configuration file for the ambiguity analysis",
 )
 @click.option(
-    "--threshold-analysis-step-count",
-    "analysis_step_count",
-    type=click.IntRange(min=1),
-    default=10,
-    required=False,
-    help="How many thresholds to analyse using one-factor-at-a-time (at least 1)",
-)
-@click.option(
-    "--threshold-analysis-step-size",
-    "analysis_step_size",
-    type=click.FloatRange(min=0.1),
-    default=1.0,
-    required=False,
-    help="How large should the difference between consecutive thresholds be for one-factor-at-a-time analysis (greater than 0)",
-)
-@click.option(
-    "--threshold-analysis-start-value",
-    "analysis_start_value",
-    type=click.FLOAT,
-    default=0.0,
-    required=False,
-    help="First threshold value of the one-factor-at-a-time sweep",
-)
-@click.option(
-    "--gmm-restarts",
-    "gmm_restarts",
-    type=click.INT,
-    default=50,
-    required=False,
-    help="Number of random restarts for the Gaussian mixture model fit",
-)
-@click.option(
     "--plot-dir",
     "plot_dir",
     type=click.Path(
@@ -279,71 +233,31 @@ def write_report(
     required=False,
     help="Directory where plots, the methodology CSV and the sweep CSVs are written",
 )
-@click.option(
-    "--secondary-features",
-    "secondary_features",
-    default=None,
-    help="Comma-separated secondary features to copy from the home representative.",
-)
-@click.option(
-    "--alphas",
-    "alphas",
-    type=click.STRING,
-    default=DEFAULT_ALPHA_GRID,
-    required=False,
-    help="Comma-separated alpha weights (in (0, 1)) for the harmonic-mean pick; the grid the alpha search explores",
-)
-@click.option(
-    "--target-floor",
-    "target_floor",
-    type=click.FLOAT,
-    default=0.0,
-    required=False,
-    help="Floor on sim_target, as a fraction of the symmetric-pick sim_target (in [0, 1])",
-)
-@click.option(
-    "--target-links",
-    "target_links",
-    type=click.INT,
-    default=1,
-    required=False,
-    help="How many links each bridge gets inside its target cluster",
-)
-@with_selection_settings
-@with_profile_options
 @click.pass_context
 def analyse_ambiguity(
     ctx: Context,
     config_file: str | PathLike,
-    analysis_step_count: int,
-    analysis_step_size: float,
-    analysis_start_value: float,
-    gmm_restarts: int,
     plot_dir: str | PathLike,
-    secondary_features: str | None,
-    alphas: str,
-    target_floor: float,
-    target_links: int,
-    selection_settings: SelectionSettings,
-    profile_options: ProfileOptions,
 ):
     """Analyse the ambiguity potential of configured benchmark datasets.
 
-    Two searches run per dataset. The threshold search fits the minimum
-    ambiguity θ from the pairing scores, ignoring the configured
-    ``minAmbiguity``. The alpha search generates the alpha grid at the
-    configured ``minAmbiguity``, profiles every variant and chooses the
+    Every setting comes from the configuration file; see the package
+    README. Two searches run per dataset. The threshold search fits the
+    minimum ambiguity θ from the pairing scores, ignoring the configured
+    ``minAmbiguity``. The alpha search generates the dataset's ``alphas`` at
+    the configured ``minAmbiguity``, profiles every variant and chooses the
     alpha whose content separability lies inside the bounds, by the chosen
     criterion.
     """
-    try:
-        alpha_sweep = AlphaSweep(AlphaSelector(selection_settings), profile_options)
-    except ValueError as err:
-        raise click.UsageError(str(err)) from err
     root_dir = get_options(ctx).root_dir
     config = load_ambiguity_config(config_file, root_dir)
-    cli_secondary_features = parse_secondary_features(secondary_features)
-    alphas_tuple = parse_alphas(alphas)
+    selection_settings = config.analysis.selection.to_selection_settings()
+    try:
+        alpha_sweep = AlphaSweep(
+            AlphaSelector(selection_settings), config.profiling.to_profile_options()
+        )
+    except ValueError as err:
+        raise click.UsageError(str(err)) from err
 
     analysis_frames: list[DataFrame] = []
     analysis_fits: list[GmmFit] = []
@@ -353,22 +267,10 @@ def analyse_ambiguity(
     for input_cfg in config.input_data:
         print("processing", input_cfg.dataset.directory)
         data = load_benchmark_data(input_cfg, root_dir)
-        generator = AmbiguityGenerator.from_config(
-            input_cfg,
-            data,
-            secondary_features=cli_secondary_features,
-            alphas=alphas_tuple,
-            target_floor=target_floor,
-            target_links=target_links,
-        )
+        generator = AmbiguityGenerator.from_config(input_cfg, data)
         try:
             sweep_df, gmm_fit, scores, bridges_at_theta = analyse_threshold(
-                analysis_start_value,
-                analysis_step_count,
-                analysis_step_size,
-                data,
-                generator,
-                gmm_restarts=gmm_restarts,
+                config.analysis.threshold, data, generator
             )
         except InsufficientScoresError as err:
             warnings.warn(f"skipping {data.name}: {err}")

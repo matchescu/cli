@@ -1,5 +1,8 @@
+from types import SimpleNamespace
+
 import pytest
 
+from matchescu.cli.commands.ambiguity._config import AmbiguityDataConfig
 from matchescu.cli.commands.ambiguity._generate import AmbiguityGenerator
 from matchescu.cli.commands.ambiguity._settings import GenerationSettings
 
@@ -322,4 +325,39 @@ def test_settings_without_optional_parameters_use_defaults(id_table, clusters):
         alphas=(0.5,),
         target_floor=0.0,
         target_links=1,
+    )
+
+
+def test_from_config_uses_dataset_entry_settings(id_table, clusters):
+    entry = AmbiguityDataConfig.model_validate(
+        {
+            "dataset": {
+                "type": "csv",
+                "directory": "./ds",
+                "sources": [{"fileName": "ids.csv", "idCol": "id"}],
+                "pairwiseMapping": {"fileName": "mapping.csv", "hasHeader": False},
+            },
+            "ambiguityTargets": ["name"],
+            "secondaryFeatures": ["year"],
+            "minAmbiguity": 1.5,
+            "alphas": [0.8, 0.5],
+            "targetFloor": 0.25,
+            "targetLinks": 2,
+        }
+    )
+    data = SimpleNamespace(
+        id_table=id_table,
+        true_matches={},
+        compute_clusters=lambda: clusters,
+        name="ds",
+    )
+
+    assert AmbiguityGenerator.from_config(entry, data).settings == GenerationSettings(
+        dataset_name="ds",
+        ambiguity_targets=("name",),
+        secondary_features=("year",),
+        min_ambiguity=1.5,
+        alphas=(0.5, 0.8),
+        target_floor=0.25,
+        target_links=2,
     )

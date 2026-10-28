@@ -80,14 +80,3 @@ class EvaluationConfig(ConfigModel):
     benchmark_data: list[EvaluationBenchmarkConfig]
     matching: list[AnyMatcherConfig] | None = None
     clustering: ClusteringConfig | None = None
-
-
-class AmbiguityDataConfig(ConfigModel):
-    dataset: AnyDatasetConfig
-    ambiguity_targets: list[str] = None
-    secondary_features: list[str] = None
-    min_ambiguity: float = None
-
-
-class AmbiguityConfig(ConfigModel):
-    input_data: list[AmbiguityDataConfig]

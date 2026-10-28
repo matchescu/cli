@@ -17,28 +17,21 @@ from matchescu.typing import (
 )
 from rich.progress import Progress
 
-from matchescu.cli.config import AmbiguityDataConfig
 from matchescu.cli.runtime import get_options, make_absolute_path
 
 from ._bridge_labels import BridgeLabels, BridgeLabelStrategy
+from ._config import AmbiguityDataConfig
 from ._dataset_generation import DatasetGeneration
 from ._pairing import GreedyPairing, Pairing, PairingStrategy
 from ._ref_ids import ref_id_sort_key
 from ._settings import GenerationSettings
-from ._shared import (
-    load_ambiguity_config,
-    load_benchmark_data,
-    parse_alphas,
-    parse_secondary_features,
-    with_profile_options,
-)
+from ._shared import load_ambiguity_config, load_benchmark_data
 from ._similarity import weighted_similarity
 from ._variant import (
     RESERVED_BRIDGE_PROPERTIES,
     AmbiguousVariant,
     ComparisonData,
 )
-from .profiling import ProfileOptions
 
 try:
     from rapidfuzz.distance import Levenshtein
@@ -50,7 +43,6 @@ except ImportError:
 
 
 TOP_N_BRIDGE_TERMS: int = 10
-DEFAULT_ALPHAS: str = "0.65"
 
 
 def _orient(a: RefId, b: RefId, bridges: set[RefId]) -> ComparisonData:
@@ -69,11 +61,11 @@ class AmbiguityGenerator:
     every bridge joined to its home cluster and linked inside its target
     cluster.
 
-    Values land at three distinct levels: dataset configuration supplies the
-    ambiguity targets, secondary features and the minimum-ambiguity filter;
-    CLI options override secondary features and supply blend parameters; the
-    remaining knobs tune candidate generation (`alphas` for the harmonic-mean
-    pick, `target_floor` and `target_links` for bridge linking).
+    The ambiguity targets, secondary features and minimum-ambiguity filter
+    shape the bridges; `alphas` drives the harmonic-mean pick, and
+    `target_floor` and `target_links` tune bridge text and linking. The
+    commands read all of them from one dataset entry of the configuration
+    file via :meth:`from_config`.
 
     :param id_table: references of the input dataset; bridges are never
         stored here, so the id table stays bridge-free by construction.
@@ -210,36 +202,19 @@ class AmbiguityGenerator:
 
     @classmethod
     def from_config(
-        cls,
-        input_cfg: AmbiguityDataConfig,
-        data: CsvBenchmarkData,
-        *,
-        secondary_features: list[str] | None,
-        alphas: tuple[float, ...],
-        target_floor: float,
-        target_links: int,
+        cls, input_cfg: AmbiguityDataConfig, data: CsvBenchmarkData
     ) -> "AmbiguityGenerator":
         """Build a generator for one configured benchmark dataset.
 
-        Generator settings live at two levels: the dataset configuration
-        (ambiguity targets, secondary features, minimum-ambiguity filter) and
-        CLI parameters (secondary features, alphas, floor, links). Both the
-        `analyse` and the `generate` commands need this merge, so it lives
-        here — the CLI value always wins when provided.
+        Every generator setting is read from the dataset entry, so the
+        `analyse` and `generate` commands build identical generators from the
+        same configuration file.
 
         :param input_cfg: one `AmbiguityConfig.input_data` entry supplying the
-            ambiguity targets, dataset-level secondary features and the
-            minimum-ambiguity filter.
+            ambiguity targets, secondary features, minimum-ambiguity filter,
+            alphas, target floor and target links.
         :param data: materialised benchmark dataset; supplies the id table,
-            untouched true matches and ground-truth clusters.
-        :param secondary_features: CLI-level feature names; ``None`` defers to
-            the dataset configuration via the `or` fallback.
-        :param alphas: harmonic-mean blend weights; the (0, 1) range is
-            validated by the constructor and reported as `ValueError`.
-        :param target_floor: minimum similarity to the target reference, as a
-            fraction of the symmetric pick's target similarity, in [0, 1].
-        :param target_links: number of links each bridge gets inside its
-            target cluster; must be at least 1.
+            untouched true matches, ground-truth clusters and name.
         :returns: the generator configured for exactly this dataset.
         """
         return cls(
@@ -247,11 +222,11 @@ class AmbiguityGenerator:
             data.true_matches,
             data.compute_clusters(),
             input_cfg.ambiguity_targets,
-            secondary_features=secondary_features or input_cfg.secondary_features,
+            secondary_features=input_cfg.secondary_features,
             min_ambiguity=input_cfg.min_ambiguity,
-            alphas=alphas,
-            target_floor=target_floor,
-            target_links=target_links,
+            alphas=tuple(input_cfg.alphas),
+            target_floor=input_cfg.target_floor,
+            target_links=input_cfg.target_links,
             dataset_name=data.name,
         )
 
@@ -964,70 +939,25 @@ class AmbiguityGenerator:
     ),
     help="root directory where ambiguous datasets corresponding to the configured input datasets are generated",
 )
-@click.option(
-    "--secondary-features",
-    "secondary_features",
-    default=None,
-    help="Comma-separated secondary features to copy from the home representative.",
-)
-@click.option(
-    "--alphas",
-    "alphas",
-    type=click.STRING,
-    default=DEFAULT_ALPHAS,
-    required=False,
-    help="Comma-separated alpha weights (in (0, 1)) for the harmonic-mean pick; one dataset variant per weight",
-)
-@click.option(
-    "--target-floor",
-    "target_floor",
-    type=click.FLOAT,
-    default=0.0,
-    required=False,
-    help="Floor on sim_target, as a fraction of the symmetric-pick sim_target (in [0, 1])",
-)
-@click.option(
-    "--target-links",
-    "target_links",
-    type=click.INT,
-    default=1,
-    required=False,
-    help="How many links each bridge gets inside its target cluster",
-)
-@with_profile_options
 @click.pass_context
 def generate_ambiguous_datasets(
     ctx: Context,
     config_file: str | PathLike,
     output_dir: str | PathLike,
-    secondary_features: str | None,
-    alphas: str,
-    target_floor: float,
-    target_links: int,
-    profile_options: ProfileOptions,
 ):
-    """Introduce ambiguous data into existing dataset.
+    """Introduce ambiguous data into existing datasets.
 
-    Besides the variants, every run upserts one row per variant into
-    ``metadata.csv`` and writes the bridge components table, both in the
-    output directory.
+    Every setting comes from the configuration file; see the package
+    README. Besides the variants, every run upserts one row per variant
+    into ``metadata.csv`` and writes the bridge components table, both in
+    the output directory.
     """
     root_dir = get_options(ctx).root_dir
     config = load_ambiguity_config(config_file, root_dir)
     output_dir = make_absolute_path(output_dir, root_dir)
-    cli_secondary_features = parse_secondary_features(secondary_features)
-    alphas_tuple = parse_alphas(alphas)
-    generation = DatasetGeneration(output_dir, profile_options)
+    generation = DatasetGeneration(output_dir, config.profiling.to_profile_options())
 
     for input_cfg in config.input_data:
         print("processing", input_cfg.dataset.directory)
         data = load_benchmark_data(input_cfg, root_dir)
-        generator = AmbiguityGenerator.from_config(
-            input_cfg,
-            data,
-            secondary_features=cli_secondary_features,
-            alphas=alphas_tuple,
-            target_floor=target_floor,
-            target_links=target_links,
-        )
-        generation.run(generator, data.id_table)
+        generation.run(AmbiguityGenerator.from_config(input_cfg, data), data.id_table)
