@@ -51,6 +51,7 @@ class GenerationIdentity:
                 self.settings.secondary_features
             ),
             "max_length_ratio": self.settings.max_length_ratio,
+            **self.settings.pairing.as_row(),
             "undirected_path": str(self.paths.undirected.relative_to(root)),
             "directed_path": str(self.paths.directed.relative_to(root)),
         }

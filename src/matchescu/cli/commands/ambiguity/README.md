@@ -43,27 +43,41 @@ It is computed field by field and summed:
 **Representative.** The member of a cluster with the highest mean ambiguity
 score against the other members.
 
-**Pairing.** Clusters are visited in a fixed order. Each visited cluster is a *home*. It picks the other cluster whose
-representative scores highest
-against its own representative; that cluster is its *target*. A cluster that
-already received a bridge cannot be a target. A pairing is kept only when its
-score is at least `minAmbiguity`.
+**Pairing.** Each bridge blends records of two different clusters. How those
+records are chosen depends on `pairingStrategy`. The default,
+`greedy-cluster-reps`, visits clusters in a fixed order. Each visited cluster is
+a *home*. It picks the other cluster with the highest score against its own
+representative; that cluster is its *target*. A cluster's score is the lowest
+ambiguity between the home representative and the target's first `targetLinks`
+ranked members, starting with the target representative. A cluster that already
+received a bridge cannot be a target. A pairing is kept only when its score is
+at least `minAmbiguity`.
+
+The alternative, `simple-pairs`, does not use representatives. It blocks
+records on the tokens of their ambiguity targets, keeps the highest-weight
+neighbours of each record among the other clusters, and turns every kept pair
+into a bridge. The home is the record in the lower-id cluster. Each bridge
+links to the paired record only, so `targetLinks` is ignored. `pairingNeighbours`,
+`pairingScope` and `pairingMaxBlockSize` tune this strategy. A pairing is kept
+only when its score is at least `minAmbiguity`.
 
 **Bridge.** One new record per kept pairing. It joins the home cluster. Its
-fields are built from the two representatives:
+fields are built from the two paired records, which are the representatives
+under `greedy-cluster-reps`:
 
 - equal values are copied;
 - fields present on only one representative are left out;
 - ambiguity targets that differ get a synthesised blend of the two values;
-- secondary features are copied from the home representative;
+- secondary features are copied from the home record;
 - other differing strings become empty, other differing values become null;
 - candidates longer than `maxLengthRatio ×` the mean token count of the two
   values are dropped; when none fit, the shortest candidates are kept.
 
 **Labels.** `0` no match, `1` match in both directions, `2` one-way match.
 Every pair inside a cluster is labelled 1. Each bridge gets
-`targetLinks` pairs `(target record, bridge)` labelled 2. The bridge is
-always the right-hand record in its pairs.
+`targetLinks` pairs `(target record, bridge)` labelled 2; `simple-pairs`
+always writes one such pair. The bridge is always the right-hand record in
+its pairs.
 
 **Alpha.** Each blended value is the candidate text with the highest weighted
 harmonic mean of its similarity to the home value (`s_home`) and to the
@@ -83,7 +97,9 @@ text changes.
 
 **Theta (θ).** The `minAmbiguity` value `analyse` suggests. It fits two
 Gaussians to the pairing scores, one for genuine and one for superficial
-resemblance, and returns the score where they are equally likely.
+resemblance, and returns the score where they are equally likely. The scores
+cover `targetLinks` members of each target, so θ depends on `targetLinks`.
+Re-run `analyse` after changing it.
 
 **Separability.** The pair text alone may reveal direction. `analyse`
 compares the similarity of *source* pairs `(home member, bridge)` with the
@@ -108,11 +124,13 @@ in a single train/valid/test split, or the split leaks clusters.
 
 ## Configuration file
 
-The file has a top-level `profiling` block, a top-level `analysis` block and
-an `inputData` list with one entry per dataset. Only `inputData` is required.
+The file has a top-level `profiling` block, a top-level `analysis` block,
+top-level pairing keys and an `inputData` list with one entry per dataset. Only
+`inputData` is required.
 
 ```json
 {
+  "pairingStrategy": "greedy-cluster-reps",
   "profiling": {
     "negativeSimilarity": false,
     "surfaceBaseline": true,
@@ -194,19 +212,28 @@ an `inputData` list with one entry per dataset. Only `inputData` is required.
 }
 ```
 
+### Pairing (top level, all datasets)
+
+| Key                   | Default               | Read by        | Meaning                                                                                                                                                                                        |
+|-----------------------|-----------------------|----------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `pairingStrategy`     | `greedy-cluster-reps` | both           | How records of different clusters are paired. `greedy-cluster-reps` writes one bridge per home cluster from cluster representatives. `simple-pairs` writes one bridge per blocked record pair. |
+| `pairingNeighbours`   | `1`                   | `simple-pairs` | Highest-weight partners kept per record, at least 1.                                                                                                                                           |
+| `pairingScope`        | `any`                 | `simple-pairs` | `any` keeps a pair when it is a top partner of either record. `mutual` keeps it only when it is a top partner of both.                                                                         |
+| `pairingMaxBlockSize` | `100`                 | `simple-pairs` | Largest token block kept. Tokens shared by more records are ignored. At least 2.                                                                                                               |
+
 ### Per dataset (`inputData[]`)
 
-| Key                 | Default  | Read by | Meaning                                                                                                                                                               |
-|---------------------|----------|---------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `dataset`           | required | both    | Where the dataset lives and how its files look. Same format as the `matching` package's dataset configs.                                                              |
-| `ambiguityTargets`  | none     | both    | Fields that receive blended values. The profile compares records on these fields only, so at least one is needed.                                                     |
-| `secondaryFeatures` | none     | both    | Fields copied from the home representative. Must not overlap `ambiguityTargets` and must not be one of the reserved values `source`, `target` or `target_cluster_id`. |
-| `minAmbiguity`      | none     | both    | Minimum pairing score of a bridge. Omit it to keep every pairing.                                                                                                     |
-| `alphas`            | required | both    | One or more values in (0, 1). `analyse` searches them; `generate` writes one variant per value.                                                                       |
-| `targetFloor`       | `0.0`    | both    | In [0, 1]. See [Concepts](#concepts).                                                                                                                                 |
-| `targetLinks`       | `1`      | both    | One-way pairs per bridge, at least 1. Values above 1 add `_kN` to output names.                                                                                       |
-| `maxLengthRatio`    | none     | both    | Highest bridge-value length, in tokens, as a multiple of the mean length of the two blended values. At least 1. Omit it to disable the limit.                        |
-| `analysis`          | none     | analyse | Replaces the whole top-level `analysis` block for this dataset. Omitted sub-blocks take their defaults, not the top-level values.                                       |
+| Key                 | Default  | Read by | Meaning                                                                                                                                                                                     |
+|---------------------|----------|---------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `dataset`           | required | both    | Where the dataset lives and how its files look. Same format as the `matching` package's dataset configs.                                                                                    |
+| `ambiguityTargets`  | none     | both    | Fields that receive blended values. The profile compares records on these fields only, so at least one is needed.                                                                           |
+| `secondaryFeatures` | none     | both    | Fields copied from the home representative. Must not overlap `ambiguityTargets` and must not be one of the reserved values `source`, `target` or `target_cluster_id`.                       |
+| `minAmbiguity`      | none     | both    | Minimum pairing score of a bridge. Omit it to keep every pairing.                                                                                                                           |
+| `alphas`            | required | both    | One or more values in (0, 1). `analyse` searches them; `generate` writes one variant per value.                                                                                             |
+| `targetFloor`       | `0.0`    | both    | In [0, 1]. See [Concepts](#concepts).                                                                                                                                                       |
+| `targetLinks`       | `1`      | both    | One-way pairs per bridge, at least 1. Also sets how many target members the pairing score covers. Values above 1 add `_kN` to output names. Ignored by `simple-pairs`, which always uses 1. |
+| `maxLengthRatio`    | none     | both    | Highest bridge-value length, in tokens, as a multiple of the mean length of the two blended values. At least 1. Omit it to disable the limit.                                               |
+| `analysis`          | none     | analyse | Replaces the whole top-level `analysis` block for this dataset. Omitted sub-blocks take their defaults, not the top-level values.                                                           |
 
 ### Profiling (`profiling`, all datasets)
 
@@ -289,9 +316,9 @@ stops at once with a usage error.
 
 | File                            | Content                                                                                                                                    |
 |---------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------|
-| `ambiguity_methodology.csv`     | One row per dataset: theta, the fit, bridges at theta, the selection settings, the chosen alpha and the bridge components. **Start here.** |
+| `ambiguity_methodology.csv`     | One row per dataset: theta, the fit, bridges and links at theta, the selection settings, the chosen alpha and the bridge components. **Start here.** |
 | `ambiguity_alpha_sweep.csv`     | One row per dataset and alpha: `feasible`, `selected` and the full profile.                                                                |
-| `ambiguity_threshold_sweep.csv` | Bridge count per threshold.                                                                                                                |
+| `ambiguity_threshold_sweep.csv` | Bridge count, link count and short-bridge count per threshold, at the configured `targetLinks`.                                             |
 | `gmm_fit_<dataset>.png`         | Pairing-score histogram with the two Gaussians and theta.                                                                                  |
 | `alpha_sweep_<dataset>.png`     | Separability and resolvable share per alpha, with the feasible band.                                                                       |
 | `threshold_analysis.png`        | Bridge counts against thresholds for all datasets.                                                                                         |
@@ -307,7 +334,10 @@ In `ambiguity_methodology.csv`:
 |-----------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------|
 | `theta`                                             | Suggested `minAmbiguity`.                                                                                                            |
 | `boundary_type`                                     | `bayes_optimal` is a proper fit; `mean_midpoint` means the two Gaussians did not separate and theta is a fallback.                   |
+| `target_links`                                      | `targetLinks` the analysis ran with.                                                                                                 |
 | `bridge_count_at_theta`, `bridge_count_per_cluster` | How many bridges theta leaves.                                                                                                       |
+| `link_count_at_theta`, `link_count_per_cluster`     | How many one-way (label-2) pairs theta leaves.                                                                                       |
+| `short_bridge_count_at_theta`                       | Bridges whose target cluster has fewer than `targetLinks` members, so they get fewer links than requested.                           |
 | `alpha_star`                                        | The chosen alpha, empty when none qualifies.                                                                                         |
 | `alpha_star_reason`                                 | `selected`, or why nothing was chosen (see [Troubleshooting](#troubleshooting)).                                                     |
 | `n_feasible_alphas`                                 | Alphas inside the separability band.                                                                                                 |
@@ -337,7 +367,7 @@ In `ambiguity_alpha_sweep.csv`, per alpha:
 | `amb_<name>_bridge_log.csv`             | Every blended value: alpha, fields, `sim_home`, `sim_target`, `share_home`, whether the floor or a fallback was used.                             |
 | `amb_<name>[_kN]_link_log.csv`          | Every one-way link and its ambiguity score.                                                                                                       |
 | `amb_<name>[_kN]_bridge_components.csv` | The bridge components.                                                                                                                            |
-| `metadata.csv`                          | One row per variant: the settings used and the full profile. Rows are replaced by name, so repeated runs into the same directory build one table. |
+| `metadata.csv`                          | One row per variant: the settings used, the pairing strategy and the full profile. Rows are replaced by name, so repeated runs into the same directory build one table. Write runs with different strategies to different output directories. |
 
 `<name>` is the last part of `dataset.directory`. `<alpha>` is alpha in
 hundredths, for example `a065` for 0.65. Each variant directory holds

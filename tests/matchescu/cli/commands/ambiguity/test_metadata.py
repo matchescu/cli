@@ -6,6 +6,11 @@ import pytest
 from matchescu.cli.commands.ambiguity._metadata import GenerationIdentity, MetadataStore
 from matchescu.cli.commands.ambiguity._settings import GenerationSettings
 from matchescu.cli.commands.ambiguity._writer import VariantNaming, VariantPaths
+from matchescu.cli.commands.ambiguity.pairing import (
+    PairingScope,
+    PairingSettings,
+    PairingStrategyName,
+)
 
 
 @pytest.fixture
@@ -62,6 +67,51 @@ def test_identity_row_holds_max_length_ratio(identity, settings, tmp_path):
     row = GenerationIdentity(configured, 0.65, identity.naming, identity.paths)
 
     assert row.as_row(tmp_path)["max_length_ratio"] == 1.2
+
+
+def test_identity_row_holds_pairing_strategy(identity, tmp_path):
+    row = identity.as_row(tmp_path)
+
+    assert row["pairing_strategy"] == "greedy-cluster-reps"
+
+
+def test_identity_row_leaves_simple_pairs_columns_empty_when_greedy(identity, tmp_path):
+    row = identity.as_row(tmp_path)
+
+    assert row["pairing_neighbours"] is None
+    assert row["pairing_scope"] is None
+    assert row["pairing_max_block_size"] is None
+
+
+def test_identity_row_holds_simple_pairs_parameters_when_simple_pairs(
+    identity, settings, tmp_path
+):
+    configured = replace(
+        settings,
+        pairing=PairingSettings(
+            name=PairingStrategyName.SIMPLE_PAIRS,
+            neighbours=4,
+            scope=PairingScope.MUTUAL,
+            max_block_size=50,
+        ),
+    )
+    sut = GenerationIdentity(configured, 0.65, identity.naming, identity.paths)
+    row = sut.as_row(tmp_path)
+
+    assert {
+        key: row[key]
+        for key in (
+            "pairing_strategy",
+            "pairing_neighbours",
+            "pairing_scope",
+            "pairing_max_block_size",
+        )
+    } == {
+        "pairing_strategy": "simple-pairs",
+        "pairing_neighbours": 4,
+        "pairing_scope": "mutual",
+        "pairing_max_block_size": 50,
+    }
 
 
 def test_identity_row_paths_are_relative_to_root(identity, tmp_path):

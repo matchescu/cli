@@ -175,3 +175,35 @@ def test_analyse_profiles_every_configured_alpha(analyse_rows):
     rows = analyse_rows("ambiguity_alpha_sweep.csv")
 
     assert [float(row["alpha"]) for row in rows] == [0.5, 0.8]
+
+
+def test_generate_succeeds_when_simple_pairs_selected(write_config, invoke, tmp_path):
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()
+
+    result = invoke(
+        "generate",
+        "-c",
+        str(write_config((0.65,), pairingStrategy="simple-pairs")),
+        "-O",
+        str(output_dir),
+    )
+
+    assert result.exit_code == 0
+
+
+def test_generate_records_pairing_strategy_in_metadata(write_config, invoke, tmp_path):
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()
+
+    invoke(
+        "generate",
+        "-c",
+        str(write_config((0.65,), pairingStrategy="simple-pairs")),
+        "-O",
+        str(output_dir),
+    )
+
+    with (output_dir / "metadata.csv").open(newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    assert {row["pairing_strategy"] for row in rows} == {"simple-pairs"}

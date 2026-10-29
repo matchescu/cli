@@ -1,4 +1,6 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+from .pairing import PairingSettings
 
 
 @dataclass(frozen=True)
@@ -22,6 +24,7 @@ class GenerationSettings:
     :ivar max_length_ratio: highest bridge-value length, in tokens, as a
         multiple of the mean length of the two blended values; ``None``
         disables the limit.
+    :ivar pairing: pairing strategy and its parameters.
     """
 
     dataset_name: str
@@ -32,3 +35,4 @@ class GenerationSettings:
     target_floor: float
     target_links: int
     max_length_ratio: float | None = None
+    pairing: PairingSettings = field(default_factory=PairingSettings)

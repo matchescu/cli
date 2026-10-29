@@ -22,6 +22,7 @@ from ._plotting import (
     render_threshold_plot,
 )
 from ._shared import load_ambiguity_config, load_benchmark_data
+from .pairing import PairingSummary
 from .profiling import ProfileOptions
 from .selection import AlphaSelector, SelectionSettings
 
@@ -39,16 +40,19 @@ def analyse_threshold(
     threshold: ThresholdAnalysisConfig,
     data: CsvBenchmarkData,
     generator: AmbiguityGenerator,
-) -> tuple[DataFrame, GmmFit, list[float], int]:
+) -> tuple[DataFrame, GmmFit, list[float], PairingSummary]:
     """Compute the threshold sweep and the GMM-optimal cutoff for one dataset.
 
     The mixture is fitted on the pairing scores made without any threshold,
     so the data-driven cutoff does not depend on the configured operating
-    point. The sweep is deliberately one-factor-at-a-time: at evenly spaced
-    cutoffs it reports how many bridges generation would actually produce
-    with ``min_ambiguity`` set to that cutoff, exposing how sensitive bridge
-    availability is to the cutoff alone. The same count is taken at the
-    fitted cutoff.
+    point. Each pairing score is the minimum ambiguity between the home
+    representative and the target's first ``targetLinks`` members, so the fit,
+    the sweep and the link counts all reflect the configured target links.
+    The sweep is deliberately one-factor-at-a-time: at evenly spaced cutoffs
+    it reports how many bridges and one-way links generation would actually
+    produce with ``min_ambiguity`` set to that cutoff, exposing how sensitive
+    bridge availability is to the cutoff alone. The same counts are taken at
+    the fitted cutoff.
 
     .. note::
         The pairing runs once for the unfiltered scores and once more for
@@ -65,11 +69,13 @@ def analyse_threshold(
         the display name that reports and plots reuse.
     :param generator: generator built for `data`; its pairing scores are the
         population the mixture is fitted on, and its pairing strategy decides
-        the bridge counts. Its own `min_ambiguity` is ignored here.
+        the bridge counts. Its own `min_ambiguity` is ignored here, but its
+        `target_links` decides the link volume.
     :returns: the sweep frame (columns `dataset`, `threshold`, `bridge_count`,
-        `cluster_count`; dataset carries the display name), the resolved
-        `GmmFit`, the unfiltered pairing scores the fit was made on, and the
-        number of bridges generation would produce at the fitted cutoff.
+        `link_count`, `short_bridge_count`, `target_links`, `cluster_count`;
+        dataset carries the display name), the resolved `GmmFit`, the
+        unfiltered pairing scores the fit was made on, and the bridge and link
+        volumes generation would produce at the fitted cutoff.
     :raises InsufficientScoresError: when the dataset yields too few pairing
         scores for the mixture fit; no bridge counting happens in that case.
     """
@@ -79,28 +85,32 @@ def analyse_threshold(
     threshold_range = threshold.start_value + threshold.step_size * np.arange(
         threshold.step_count
     )
-    *sweep_counts, bridges_at_theta = generator.bridge_counts(
+    *sweep, at_theta = generator.pairing_summaries(
         [*threshold_range.tolist(), gmm_fit.threshold]
     )
 
     display_name = _DATASET_DISPLAY_NAMES.get(data.name, data.name)
     cluster_count = len(data.compute_clusters())
+    target_links = generator.settings.target_links
 
     sweep_rows = [
         {
             "dataset": display_name,
             "threshold": t,
-            "bridge_count": count,
+            "bridge_count": summary.bridge_count,
+            "link_count": summary.link_count,
+            "short_bridge_count": summary.short_bridge_count,
+            "target_links": target_links,
             "cluster_count": cluster_count,
         }
-        for t, count in zip(threshold_range, sweep_counts)
+        for t, summary in zip(threshold_range, sweep)
     ]
 
     return (
         pl.DataFrame(data=sweep_rows),
         gmm_fit,
         scores,
-        bridges_at_theta,
+        at_theta,
     )
 
 
@@ -126,27 +136,29 @@ def _alpha_sweeps(config: AmbiguityConfig, options: ProfileOptions) -> list[Alph
 def build_methodology_rows(
     analysis_frames: list[DataFrame],
     analysis_fits: list[GmmFit],
-    analysis_bridges: list[int],
+    analysis_at_theta: list[PairingSummary],
     analysis_sweeps: list[AlphaSweepResult],
     analysis_selections: list[SelectionSettings],
 ) -> list[dict[Any, Any]]:
     """Summarise every analysed dataset into methodology report rows.
 
     Each row condenses one dataset's fit into the numbers populating the
-    ambiguity-injection table: bridges available at the fitted threshold,
-    normalised per cluster, the mixture component statistics, the alpha
-    chosen from the sweep with the parameters of that choice, and the bridge
-    components at the configured threshold. Display rounding (2 decimals)
-    happens here so the CSV is directly usable, while raw precision remains
-    available on the underlying `GmmFit` and in the alpha sweep CSV.
+    ambiguity-injection table: bridges and one-way links available at the
+    fitted threshold, normalised per cluster, the mixture component
+    statistics, the alpha chosen from the sweep with the parameters of that
+    choice, and the bridge components at the configured threshold. Display
+    rounding (2 decimals) happens here so the CSV is directly usable, while
+    raw precision remains available on the underlying `GmmFit` and in the
+    alpha sweep CSV.
 
-    :param analysis_frames: per-dataset sweep frames (the `dataset` and
-        `cluster_count` columns are consumed here), index-aligned with the
-        other collections.
+    :param analysis_frames: per-dataset sweep frames (the `dataset`,
+        `cluster_count` and `target_links` columns are consumed here),
+        index-aligned with the other collections.
     :param analysis_fits: per-dataset fits supplying the theta boundary and
         component statistics.
-    :param analysis_bridges: per-dataset number of bridges generation would
-        produce at the fitted threshold, as returned by `analyse_threshold`.
+    :param analysis_at_theta: per-dataset bridge and link volume generation
+        would produce at the fitted threshold, as returned by
+        `analyse_threshold`.
     :param analysis_sweeps: per-dataset alpha sweeps supplying the chosen
         alpha and the bridge component columns.
     :param analysis_selections: per-dataset parameters of the alpha choice.
@@ -154,28 +166,35 @@ def build_methodology_rows(
         an empty list.
     """
     rows: list[dict[Any, Any]] = []
-    for df, fit, bridge_count_at_theta, sweep, selection in zip(
+    for df, fit, at_theta, sweep, selection in zip(
         analysis_frames,
         analysis_fits,
-        analysis_bridges,
+        analysis_at_theta,
         analysis_sweeps,
         analysis_selections,
     ):
+        cluster_count = df["cluster_count"][0]
         rows.append(
             {
                 "dataset": df["dataset"][0],
-                "cluster_count": df["cluster_count"][0],
-                "bridge_count_at_theta": int(bridge_count_at_theta),
+                "cluster_count": cluster_count,
+                "target_links": df["target_links"][0],
+                "bridge_count_at_theta": at_theta.bridge_count,
                 "bridge_count_per_cluster": round(
-                    bridge_count_at_theta / df["cluster_count"][0], 2
+                    at_theta.bridge_count / cluster_count, DISPLAY_DECIMALS
                 ),
-                "theta": round(fit.threshold, 2),
-                "mu_genuine": round(fit.mu_genuine, 2),
-                "sigma_genuine": round(fit.sigma_genuine, 2),
-                "pi_genuine": round(fit.pi_genuine, 2),
-                "mu_superficial": round(fit.mu_superficial, 2),
-                "sigma_superficial": round(fit.sigma_superficial, 2),
-                "pi_superficial": round(fit.pi_superficial, 2),
+                "link_count_at_theta": at_theta.link_count,
+                "link_count_per_cluster": round(
+                    at_theta.link_count / cluster_count, DISPLAY_DECIMALS
+                ),
+                "short_bridge_count_at_theta": at_theta.short_bridge_count,
+                "theta": round(fit.threshold, DISPLAY_DECIMALS),
+                "mu_genuine": round(fit.mu_genuine, DISPLAY_DECIMALS),
+                "sigma_genuine": round(fit.sigma_genuine, DISPLAY_DECIMALS),
+                "pi_genuine": round(fit.pi_genuine, DISPLAY_DECIMALS),
+                "mu_superficial": round(fit.mu_superficial, DISPLAY_DECIMALS),
+                "sigma_superficial": round(fit.sigma_superficial, DISPLAY_DECIMALS),
+                "pi_superficial": round(fit.pi_superficial, DISPLAY_DECIMALS),
                 "boundary_type": fit.boundary_type,
                 **selection.as_row(),
                 **_rounded(sweep.summary()),
@@ -282,16 +301,18 @@ def analyse_ambiguity(
     analysis_frames: list[DataFrame] = []
     analysis_fits: list[GmmFit] = []
     analysis_scores: list[list[float]] = []
-    analysis_bridges: list[int] = []
+    analysis_at_theta: list[PairingSummary] = []
     analysis_sweeps: list[AlphaSweepResult] = []
     analysis_selections: list[SelectionSettings] = []
     for input_cfg, alpha_sweep in zip(config.input_data, alpha_sweeps):
         print("processing", input_cfg.dataset.directory)
         data = load_benchmark_data(input_cfg, root_dir)
-        generator = AmbiguityGenerator.from_config(input_cfg, data)
+        generator = AmbiguityGenerator.from_config(
+            input_cfg, data, config.pairing_settings()
+        )
         analysis = config.analysis_for(input_cfg)
         try:
-            sweep_df, gmm_fit, scores, bridges_at_theta = analyse_threshold(
+            sweep_df, gmm_fit, scores, at_theta = analyse_threshold(
                 analysis.threshold, data, generator
             )
         except InsufficientScoresError as err:
@@ -300,7 +321,7 @@ def analyse_ambiguity(
         analysis_frames.append(sweep_df)
         analysis_fits.append(gmm_fit)
         analysis_scores.append(scores)
-        analysis_bridges.append(bridges_at_theta)
+        analysis_at_theta.append(at_theta)
         analysis_selections.append(analysis.selection.to_selection_settings())
         analysis_sweeps.append(
             alpha_sweep.run(generator, data.id_table, sweep_df["dataset"][0])
@@ -328,7 +349,7 @@ def analyse_ambiguity(
     methodology_rows = build_methodology_rows(
         analysis_frames,
         analysis_fits,
-        analysis_bridges,
+        analysis_at_theta,
         analysis_sweeps,
         analysis_selections,
     )
@@ -339,6 +360,6 @@ def analyse_ambiguity(
         analysis_frames,
         analysis_fits,
         analysis_scores,
-        analysis_bridges,
+        [summary.bridge_count for summary in analysis_at_theta],
         plot_path / "threshold_analysis.png",
     )

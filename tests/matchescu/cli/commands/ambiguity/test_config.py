@@ -8,6 +8,11 @@ from matchescu.cli.commands.ambiguity._config import (
     SelectionConfig,
     ThresholdAnalysisConfig,
 )
+from matchescu.cli.commands.ambiguity.pairing import (
+    PairingScope,
+    PairingSettings,
+    PairingStrategyName,
+)
 from matchescu.cli.commands.ambiguity.profiling import ProfileOptions, SplitRatio
 from matchescu.cli.commands.ambiguity.selection import (
     SelectionSettings,
@@ -282,3 +287,48 @@ def test_threshold_analysis_parses_every_camel_case_key():
 def test_invalid_threshold_analysis_raises(threshold):
     with pytest.raises(ValidationError):
         ThresholdAnalysisConfig.model_validate(threshold)
+
+
+def test_pairing_strategy_defaults_to_greedy_cluster_reps():
+    sut = AmbiguityConfig.model_validate({"inputData": []})
+
+    assert sut.pairing_strategy == PairingStrategyName.GREEDY_CLUSTER_REPS
+
+
+def test_pairing_settings_parse_every_camel_case_key():
+    sut = AmbiguityConfig.model_validate(
+        {
+            "pairingStrategy": "simple-pairs",
+            "pairingNeighbours": 4,
+            "pairingScope": "mutual",
+            "pairingMaxBlockSize": 50,
+            "inputData": [],
+        }
+    )
+
+    assert sut.pairing_settings() == PairingSettings(
+        name=PairingStrategyName.SIMPLE_PAIRS,
+        neighbours=4,
+        scope=PairingScope.MUTUAL,
+        max_block_size=50,
+    )
+
+
+def test_invalid_pairing_strategy_raises():
+    with pytest.raises(ValidationError):
+        AmbiguityConfig.model_validate({"pairingStrategy": "foo", "inputData": []})
+
+
+def test_invalid_pairing_scope_raises():
+    with pytest.raises(ValidationError):
+        AmbiguityConfig.model_validate({"pairingScope": "foo", "inputData": []})
+
+
+def test_pairing_neighbours_below_one_raises():
+    with pytest.raises(ValidationError):
+        AmbiguityConfig.model_validate({"pairingNeighbours": 0, "inputData": []})
+
+
+def test_pairing_max_block_size_below_two_raises():
+    with pytest.raises(ValidationError):
+        AmbiguityConfig.model_validate({"pairingMaxBlockSize": 1, "inputData": []})

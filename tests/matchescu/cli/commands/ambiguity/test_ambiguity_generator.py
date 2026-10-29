@@ -1,10 +1,18 @@
 from types import SimpleNamespace
 
 import pytest
+from matchescu.reference_store.id_table import InMemoryIdTable
+from matchescu.typing import EntityReference
+from matchescu.typing import EntityReferenceIdentifier as RefId
 
 from matchescu.cli.commands.ambiguity._config import AmbiguityDataConfig
 from matchescu.cli.commands.ambiguity._generate import AmbiguityGenerator
 from matchescu.cli.commands.ambiguity._settings import GenerationSettings
+from matchescu.cli.commands.ambiguity.pairing import (
+    PairingSettings,
+    PairingStrategyName,
+    PairingSummary,
+)
 
 _HOME_CLUSTER_ID = 1
 _PROX_CLUSTER_ID = 2
@@ -382,3 +390,171 @@ def test_from_config_uses_dataset_entry_settings(id_table, clusters):
         target_links=2,
         max_length_ratio=1.2,
     )
+
+
+@pytest.fixture
+def linked_table():
+    return (
+        InMemoryIdTable()
+        .put(EntityReference(RefId(1, "ds"), {"name": "abc"}))
+        .put(EntityReference(RefId(2, "ds"), {"name": "abc"}))
+        .put(EntityReference(RefId(3, "ds"), {"name": "xyz"}))
+    )
+
+
+@pytest.fixture
+def linked_clusters():
+    return frozenset(
+        {
+            frozenset({RefId(1, "ds")}),
+            frozenset({RefId(2, "ds"), RefId(3, "ds")}),
+        }
+    )
+
+
+def _linked_generator(linked_table, linked_clusters, target_links, **kwargs):
+    return AmbiguityGenerator(
+        linked_table, linked_clusters, ["name"], target_links=target_links, **kwargs
+    )
+
+
+def test_best_pairing_scores_use_target_representative_when_one_link(
+    linked_table, linked_clusters
+):
+    sut = _linked_generator(linked_table, linked_clusters, target_links=1)
+
+    assert sut.best_pairing_scores() == [2.0]
+
+
+def test_best_pairing_scores_take_minimum_over_target_links_when_several_links(
+    linked_table, linked_clusters
+):
+    sut = _linked_generator(linked_table, linked_clusters, target_links=2)
+
+    assert sut.best_pairing_scores() == [0.0]
+
+
+def test_pairing_summaries_count_links_when_no_threshold(linked_table, linked_clusters):
+    sut = _linked_generator(linked_table, linked_clusters, target_links=2)
+
+    assert sut.pairing_summaries([None]) == [PairingSummary(1, 2, 0)]
+
+
+def test_pairing_summaries_count_short_bridges_when_target_too_small(
+    linked_table, linked_clusters
+):
+    sut = _linked_generator(linked_table, linked_clusters, target_links=3)
+
+    assert sut.pairing_summaries([None]) == [PairingSummary(1, 2, 1)]
+
+
+def test_pairing_summaries_drop_pairings_below_threshold(linked_table, linked_clusters):
+    sut = _linked_generator(linked_table, linked_clusters, target_links=2)
+
+    assert sut.pairing_summaries([2.5]) == [PairingSummary(0, 0, 0)]
+
+
+def test_generation_skips_bridge_when_linked_member_below_min_ambiguity(
+    linked_table, linked_clusters
+):
+    sut = _linked_generator(
+        linked_table, linked_clusters, target_links=2, min_ambiguity=2.5
+    )
+
+    assert sut()[0.5].bridges == ()
+
+
+def test_generation_keeps_bridge_when_one_link_clears_min_ambiguity(
+    linked_table, linked_clusters
+):
+    sut = _linked_generator(
+        linked_table, linked_clusters, target_links=1, min_ambiguity=1.0
+    )
+
+    assert len(sut()[0.5].bridges) == 1
+
+
+@pytest.fixture
+def simple_table():
+    return (
+        InMemoryIdTable()
+        .put(EntityReference(RefId(1, "ds"), {"name": "John Doe"}))
+        .put(EntityReference(RefId(2, "ds"), {"name": "Jane Doe"}))
+        .put(EntityReference(RefId(3, "ds"), {"name": "Jim Doe"}))
+    )
+
+
+@pytest.fixture
+def simple_clusters():
+    return frozenset(
+        {
+            frozenset({RefId(1, "ds")}),
+            frozenset({RefId(2, "ds")}),
+            frozenset({RefId(3, "ds")}),
+        }
+    )
+
+
+def _simple_pairing(neighbours=2):
+    return PairingSettings(name=PairingStrategyName.SIMPLE_PAIRS, neighbours=neighbours)
+
+
+def _simple_generator(table, clusters, **kwargs):
+    return AmbiguityGenerator(
+        table, clusters, ["name"], pairing=_simple_pairing(), **kwargs
+    )
+
+
+def test_simple_pairs_generates_several_bridges_when_home_has_several_neighbours(
+    simple_table, simple_clusters
+):
+    variant = _simple_generator(simple_table, simple_clusters)()[0.5]
+
+    home_bridges = [
+        bridge for bridge in variant.bridges if bridge["source"].id == RefId(1, "ds")
+    ]
+    assert len(home_bridges) == 2
+
+
+def test_simple_pairs_links_only_paired_target(simple_table, simple_clusters):
+    variant = _simple_generator(simple_table, simple_clusters)()[0.5]
+
+    assert {entry["rank"] for entry in variant.link_log} == {0}
+
+
+def test_simple_pairs_logs_one_link_per_bridge(simple_table, simple_clusters):
+    variant = _simple_generator(simple_table, simple_clusters)()[0.5]
+
+    assert len(variant.link_log) == len(variant.bridges)
+
+
+def test_simple_pairs_bridge_labels_are_distinct():
+    table = (
+        InMemoryIdTable()
+        .put(EntityReference(RefId("a", "ds"), {"name": "John Doe"}))
+        .put(EntityReference(RefId("b", "ds"), {"name": "Jane Doe"}))
+        .put(EntityReference(RefId("c", "ds"), {"name": "Jim Doe"}))
+    )
+    clusters = frozenset(
+        {
+            frozenset({RefId("a", "ds")}),
+            frozenset({RefId("b", "ds")}),
+            frozenset({RefId("c", "ds")}),
+        }
+    )
+
+    variant = _simple_generator(table, clusters)()[0.5]
+
+    labels = [bridge.id.label for bridge in variant.bridges]
+    assert len(set(labels)) == len(labels)
+
+
+def test_simple_pairs_settings_report_single_target_link_when_configured_higher(
+    id_table, clusters
+):
+    with pytest.warns(UserWarning, match="targetLinks"):
+        sut = AmbiguityGenerator(
+            id_table, clusters, ["name"], target_links=2, pairing=_simple_pairing()
+        )
+
+    assert sut.settings.target_links == 1

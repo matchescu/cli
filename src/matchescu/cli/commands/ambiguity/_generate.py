@@ -2,7 +2,6 @@ import re
 import warnings
 from collections import Counter
 from collections.abc import Sequence
-from functools import partial
 from itertools import combinations, permutations
 from os import PathLike
 from typing import ClassVar
@@ -24,7 +23,6 @@ from matchescu.cli.runtime import get_options, make_absolute_path
 from ._bridge_labels import BridgeLabels, BridgeLabelStrategy
 from ._config import AmbiguityDataConfig
 from ._dataset_generation import DatasetGeneration
-from ._pairing import GreedyPairing, Pairing, PairingStrategy
 from ._ref_ids import ref_id_sort_key
 from ._settings import GenerationSettings
 from ._shared import load_ambiguity_config, load_benchmark_data
@@ -33,6 +31,12 @@ from ._variant import (
     RESERVED_BRIDGE_PROPERTIES,
     AmbiguousVariant,
     ComparisonData,
+)
+from .pairing import (
+    BridgeSeed,
+    PairingInput,
+    PairingSettings,
+    PairingSummary,
 )
 
 TOP_N_BRIDGE_TERMS: int = 10
@@ -45,14 +49,13 @@ def _orient(a: RefId, b: RefId, bridges: set[RefId]) -> ComparisonData:
 class AmbiguityGenerator:
     """Generates ambiguous bridge records that straddle neighbouring clusters.
 
-    For every cluster the generator nominates a representative (the member
-    most ambiguous with respect to its cluster mates), pairs each
-    representative with the closest other-cluster representative by ambiguity
-    score, and synthesises a bridge record whose property values blend the
-    two: distinct from both originals, yet claimed plausibly by either
-    cluster. Cluster ground truth is derived from the input clusters, with
-    every bridge joined to its home cluster and linked inside its target
-    cluster.
+    For every bridge seed of the configured pairing strategy the generator
+    synthesises a bridge record whose property values blend two records of
+    different clusters: distinct from both originals, yet claimed plausibly
+    by either cluster. Cluster ground truth is derived from the input
+    clusters, with every bridge joined to its home cluster and linked inside
+    its target cluster. By default the strategy pairs cluster representatives,
+    the member most ambiguous with respect to its cluster mates.
 
     The ambiguity targets, secondary features and minimum-ambiguity filter
     shape the bridges; `alphas` drives the harmonic-mean pick, and
@@ -80,14 +83,16 @@ class AmbiguityGenerator:
     :param target_floor: minimum similarity to the target reference, as a
         fraction of the symmetric pick's target similarity, in [0, 1].
     :param target_links: number of links each bridge gets inside its target
-        cluster, applied in the cluster's ambiguity ranking order.
+        cluster, applied in the cluster's ambiguity ranking order. Also sets
+        how many target members the pairing score covers: the score is their
+        minimum ambiguity with the home representative. The `simple-pairs`
+        strategy ignores it and always uses one link.
     :param max_length_ratio: highest bridge-value length, in tokens, as a
         multiple of the mean length of the two blended values. Candidates
         over the limit are dropped; when none fit, the shortest candidates
         are kept. ``None`` disables the limit.
-    :param pairing_strategy: selects the target cluster of each home cluster,
-        for generation and for threshold analysis alike. Defaults to ``None``,
-        meaning :class:`GreedyPairing`.
+    :param pairing: selects how records of different clusters are paired,
+        for generation and for threshold analysis alike.
     :param dataset_name: name of the input dataset; hashed into string bridge
         labels so they stay reproducible and distinct across datasets.
         Defaults to ``""``, which keeps string labels unique within the
@@ -114,7 +119,7 @@ class AmbiguityGenerator:
         target_links: int = 1,
         max_length_ratio: float | None = None,
         *,
-        pairing_strategy: PairingStrategy | None = None,
+        pairing: PairingSettings | None = None,
         dataset_name: str = "",
     ) -> None:
         if not all(0 < alpha < 1 for alpha in alphas):
@@ -125,6 +130,7 @@ class AmbiguityGenerator:
             raise ValueError("target_links must be >= 1")
         if max_length_ratio is not None and max_length_ratio < 1:
             raise ValueError("max_length_ratio must be >= 1")
+        pairing = pairing if pairing is not None else PairingSettings()
         self._id_table = id_table
         self._cluster_id_map = {
             cluster_idx: set(cluster)
@@ -139,22 +145,17 @@ class AmbiguityGenerator:
         self._target_properties = set(ambiguity_target_properties or [])
         self._secondary_features = set(secondary_features or [])
         self._validate_secondary_features()
-        n_total_steps = 3 * len(clusters)
         self._progress = Progress()
         self._main_task = self._progress.add_task(
-            description="create ambiguous data", total=n_total_steps
+            description="create ambiguous data", total=None
         )
         self._min_ambiguity = min_ambiguity
         self._bridge_terms = self._build_bridge_terms()
         self._alphas = tuple(sorted(set(alphas)))
         self._target_floor = target_floor
-        self._target_links = target_links
+        self._target_links = pairing.target_links_for(target_links)
         self._max_length_ratio = max_length_ratio
-        self._pairing_strategy = (
-            pairing_strategy if pairing_strategy is not None else GreedyPairing()
-        )
         self._dataset_name = dataset_name
-        self._cluster_rankings: dict[int, list[RefId]] = {}
         self.__settings = GenerationSettings(
             dataset_name=dataset_name,
             ambiguity_targets=tuple(dict.fromkeys(ambiguity_target_properties or [])),
@@ -162,9 +163,25 @@ class AmbiguityGenerator:
             min_ambiguity=min_ambiguity,
             alphas=self._alphas,
             target_floor=target_floor,
-            target_links=target_links,
+            target_links=self._target_links,
             max_length_ratio=max_length_ratio,
+            pairing=pairing,
         )
+        self.__pairing = pairing.build(self.__pairing_input())
+
+    def __pairing_input(self) -> PairingInput:
+        return PairingInput(
+            clusters=self._cluster_id_map,
+            id_table=self._id_table,
+            score=self._ref_ambiguity,
+            score_refs=self._ambiguity_score,
+            target_fields=self.__settings.ambiguity_targets,
+            target_links=self._target_links,
+            on_progress=self.__on_progress,
+        )
+
+    def __on_progress(self, description: str) -> None:
+        self._progress.update(self._main_task, description=description, advance=1)
 
     @property
     def settings(self) -> GenerationSettings:
@@ -173,7 +190,10 @@ class AmbiguityGenerator:
 
     @classmethod
     def from_config(
-        cls, input_cfg: AmbiguityDataConfig, data: CsvBenchmarkData
+        cls,
+        input_cfg: AmbiguityDataConfig,
+        data: CsvBenchmarkData,
+        pairing: PairingSettings | None = None,
     ) -> "AmbiguityGenerator":
         """Build a generator for one configured benchmark dataset.
 
@@ -186,6 +206,8 @@ class AmbiguityGenerator:
             alphas, target floor and target links.
         :param data: materialised benchmark dataset; supplies the id table,
             ground-truth clusters and name.
+        :param pairing: pairing strategy and its parameters, shared by every
+            dataset; defaults to the greedy cluster-representative strategy.
         :returns: the generator configured for exactly this dataset.
         """
         return cls(
@@ -198,6 +220,7 @@ class AmbiguityGenerator:
             target_floor=input_cfg.target_floor,
             target_links=input_cfg.target_links,
             max_length_ratio=input_cfg.max_length_ratio,
+            pairing=pairing,
             dataset_name=data.name,
         )
 
@@ -302,89 +325,10 @@ class AmbiguityGenerator:
 
         return score
 
-    def _get_cluster_representatives(self):
-        cluster_reps = {}
-        self._cluster_rankings = {}
-        for cluster_id, ref_ids in self._cluster_id_map.items():
-            self._progress.update(
-                self._main_task, description=f"nominating [{cluster_id}] cluster rep"
-            )
-            candidates = sorted(ref_ids, key=ref_id_sort_key)
-            refs = list(self._id_table.get_all(candidates))
-            rep_idx = 0
-            mean_ambiguities = None
-            if len(refs) > 1:
-                mean_ambiguities = []
-                for i, ref in enumerate(refs):
-                    others = refs[:i] + refs[i + 1 :]
-                    n = len(others)
-                    ambiguity_scores = [self._ambiguity_score(ref, x) for x in others]
-                    mean_score = sum(ambiguity_scores) / n if n > 0 else 0
-                    mean_ambiguities.append(mean_score)
-                max_ambiguity = 0
-                rep_idx = 0
-                for i, ambiguity in enumerate(mean_ambiguities):
-                    if max_ambiguity < ambiguity:
-                        max_ambiguity = ambiguity
-                        rep_idx = i
-            cluster_reps[cluster_id] = candidates[rep_idx]
-            self._cluster_rankings[cluster_id] = self._ranked_by_amb(
-                candidates, rep_idx, mean_ambiguities
-            )
-            self._progress.advance(self._main_task)
-        return cluster_reps
-
-    @staticmethod
-    def _ranked_by_amb(clust_members, rep_idx, mean_ambiguities):
-        ranking = [clust_members[rep_idx]]
-        if mean_ambiguities is None:
-            return ranking  # no mean ambiguities -> cluster rep only
-        others = sorted(
-            (
-                (mean_ambiguities[i], clust_members[i])
-                for i in range(len(clust_members))
-                if i != rep_idx
-            ),
-            key=lambda tpl: -tpl[0],
+    def _ref_ambiguity(self, home: RefId, member: RefId) -> float:
+        return self._ambiguity_score(
+            self._id_table.get(home), self._id_table.get(member)
         )
-        ranking.extend(ref_id for _, ref_id in others)
-        return ranking
-
-    def _rep_refs(self, cluster_reps) -> dict[int, EntityReference]:
-        return {
-            cluster_id: self._id_table.get(ref_id)
-            for cluster_id, ref_id in cluster_reps.items()
-        }
-
-    def _rep_affinity(self, rep_refs, home: int, other: int) -> float:
-        return self._ambiguity_score(rep_refs[home], rep_refs[other])
-
-    def _on_pairing_home(self, cluster_id: int) -> None:
-        self._progress.update(
-            self._main_task,
-            description=f"finding [{cluster_id}] closest cluster rep",
-        )
-        self._progress.advance(self._main_task)
-
-    def _pairings(self, rep_refs, min_score: float | None) -> list[Pairing]:
-        return self._pairing_strategy(
-            list(rep_refs),
-            partial(self._rep_affinity, rep_refs),
-            min_score,
-            self._on_pairing_home,
-        )
-
-    def _find_closest_rep(self, cluster_reps):
-        rep_refs = self._rep_refs(cluster_reps)
-        pairings = self._pairings(rep_refs, self._min_ambiguity)
-        return {
-            pairing.home_cluster_id: (
-                pairing.target_cluster_id,
-                pairing.score,
-                rep_refs[pairing.target_cluster_id],
-            )
-            for pairing in pairings
-        }
 
     @classmethod
     def _score_pool(
@@ -582,23 +526,21 @@ class AmbiguityGenerator:
             )
 
     def _generate_ambiguous_references(
-        self, cluster_reps, closest_correspondents, next_label: BridgeLabelStrategy
+        self, seeds: Sequence[BridgeSeed], next_label: BridgeLabelStrategy
     ):
-        start_refs = {k: self._id_table.get(v) for k, v in cluster_reps.items()}
         secondary_counts = {k: Counter() for k in self._secondary_features}
 
-        ambiguous_refs = {alpha: {} for alpha in self._alphas}
+        ambiguous_refs: dict[float, list[tuple[BridgeSeed, EntityReference]]] = {
+            alpha: [] for alpha in self._alphas
+        }
         bridge_logs: dict[float, list[dict]] = {alpha: [] for alpha in self._alphas}
-        for cluster_id, start_ref in start_refs.items():
-            self._progress.update(
-                self._main_task,
-                description=f"generating ambiguous cluster [{cluster_id}] reference",
-            )
-            if cluster_id not in closest_correspondents:
-                self._progress.advance(self._main_task)
-                continue
-            target_cluster_id, _score, target = closest_correspondents[cluster_id]
-            bridge_label = next_label(cluster_id)
+        for seed in seeds:
+            cluster_id = seed.home_cluster_id
+            target_cluster_id = seed.target_cluster_id
+            self.__on_progress(f"generating ambiguous cluster [{cluster_id}] reference")
+            start_ref = self._id_table.get(seed.home_ref)
+            target = self._id_table.get(seed.target_ref)
+            bridge_label = next_label(seed.label_key)
             source_dict = start_ref.as_dict()
             target_dict = target.as_dict()
             all_keys = set(source_dict.keys()) | set(target_dict.keys())
@@ -650,8 +592,7 @@ class AmbiguityGenerator:
                 new_ref = EntityReference(
                     RefId(bridge_label, "ambiguity-generator"), props
                 )
-                ambiguous_refs[alpha][cluster_id] = new_ref
-            self._progress.advance(self._main_task)
+                ambiguous_refs[alpha].append((seed, new_ref))
         self._print_secondary_feature_summary(secondary_counts)
         return ambiguous_refs, bridge_logs
 
@@ -698,25 +639,23 @@ class AmbiguityGenerator:
         cluster_gt: dict[int, set[RefId]] = {
             cid: set(refs) for cid, refs in self._cluster_id_map.items()
         }
-        for cluster_id, ref in bridges.items():
-            cluster_gt[cluster_id].add(ref.id)
+        by_home: dict[int, list[tuple[BridgeSeed, EntityReference]]] = {}
+        for seed, ref in bridges:
+            cluster_gt[seed.home_cluster_id].add(ref.id)
+            by_home.setdefault(seed.home_cluster_id, []).append((seed, ref))
 
         directed_gt: dict[ComparisonData, int] = {}
         undirected_gt: dict[ComparisonData, int] = {}
         link_log: list[dict] = []
-        bridge_ids = {ref.id for ref in bridges.values()}
+        bridge_ids = {ref.id for _, ref in bridges}
         for cluster_id, ref_ids in cluster_gt.items():
             sorted_ref_ids = sorted(ref_ids, key=ref_id_sort_key)
             for left, right in combinations(sorted_ref_ids, 2):
                 cmp_data = _orient(left, right, bridge_ids)
                 undirected_gt[cmp_data] = 1
                 directed_gt[cmp_data] = 1
-            if (bridge := bridges.get(cluster_id)) is not None:
-                for rank, t_id in enumerate(
-                    self._cluster_rankings[bridge.target_cluster_id][
-                        : self._target_links
-                    ]
-                ):
+            for seed, bridge in by_home.get(cluster_id, []):
+                for rank, t_id in enumerate(seed.linked_refs):
                     cmp_data = (t_id, bridge.id)
                     undirected_gt[cmp_data] = 1
                     directed_gt[cmp_data] = 2
@@ -724,7 +663,7 @@ class AmbiguityGenerator:
                         {
                             "alpha": alpha,
                             "bridge_label": bridge.id.label,
-                            "target_cluster": bridge.target_cluster_id,
+                            "target_cluster": seed.target_cluster_id,
                             "target_label": t_id.label,
                             "rank": rank,
                             "ambiguity": self._ambiguity_score(
@@ -740,7 +679,7 @@ class AmbiguityGenerator:
         )
         return AmbiguousVariant(
             alpha=alpha,
-            bridges=tuple(bridges.values()),
+            bridges=tuple(ref for _, ref in bridges),
             cluster_gt=cluster_gt,
             directed_gt=directed_gt,
             undirected_gt=undirected_gt,
@@ -753,6 +692,9 @@ class AmbiguityGenerator:
 
         Threshold analysis needs a score population that does not depend on
         the configured operating point, so `min_ambiguity` is ignored here.
+        Under the default strategy every score is the minimum ambiguity
+        between the home representative and the first `target_links` members
+        of the target cluster, so it depends on `target_links`.
 
         .. note::
             The scores come from the configured pairing strategy. With the
@@ -763,20 +705,23 @@ class AmbiguityGenerator:
             scores of the pairing the strategy makes, not each cluster's
             globally best score.
 
-        :returns: one score per paired home cluster, in cluster-id order.
+        :returns: one score per accepted pairing, in bridge order.
         """
-        rep_refs = self._rep_refs(self._get_cluster_representatives())
-        return [pairing.score for pairing in self._pairings(rep_refs, None)]
+        return self.__pairing.scores()
 
-    def bridge_counts(self, min_scores: Sequence[float | None]) -> list[int]:
-        """Count how many bridges would be produced at each threshold.
+    def pairing_summaries(
+        self, min_scores: Sequence[float | None]
+    ) -> list[PairingSummary]:
+        """Summarise the bridges and links generation would produce per threshold.
 
-        Threshold analysis needs the number of bridges a run with
-        ``min_ambiguity = t`` would actually generate. Counting pairing scores
-        at or above ``t`` is not enough: a home rejected by the threshold
-        stays available as a target, which changes the pairings of later
-        homes. Each threshold therefore gets its own pairing run, and the
-        cost grows linearly with the number of thresholds.
+        Threshold analysis needs the bridge and link volume a run with
+        ``min_ambiguity = t`` would actually generate. The configured strategy
+        answers for its own rule. With the default strategy, counting pairing
+        scores at or above ``t`` is not enough: a home rejected by the
+        threshold stays available as a target, which changes the pairings of
+        later homes, so each threshold gets its own pairing run. Strategies
+        whose accepted set depends only on the scores filter a cached
+        population instead.
 
         .. note::
             Counts are not necessarily monotonic in the threshold: raising it
@@ -784,15 +729,16 @@ class AmbiguityGenerator:
 
         :param min_scores: thresholds to evaluate, each standing in for
             `min_ambiguity`; ``None`` means no threshold.
-        :returns: one bridge count per threshold, in the same order.
+        :returns: one summary per threshold, in the same order; each carries
+            the bridge count, the total link count and the number of bridges
+            whose target cluster cannot fill every link.
         """
-        rep_refs = self._rep_refs(self._get_cluster_representatives())
-        return [len(self._pairings(rep_refs, t)) for t in min_scores]
+        return self.__pairing.summaries(min_scores)
 
     def __call__(self) -> dict[float, AmbiguousVariant]:
         """Generate every alpha variant of the ambiguous bridge records.
 
-        Streams the three stages (representative nomination, closest-cluster
+        Streams the strategy stages (representative nomination or blocking,
         pairing, bridge synthesis) through the shared rich progress bar, then
         derives the per-alpha ground truth from clusters and the bridges.
         Every call starts from scratch, so repeated calls return equal
@@ -811,10 +757,9 @@ class AmbiguityGenerator:
         )
         self._progress.start()
         try:
-            cluster_reps = self._get_cluster_representatives()
-            closest_reps = self._find_closest_rep(cluster_reps)
+            seeds = self.__pairing.seeds(self._min_ambiguity)
             ambiguous_refs, bridge_logs = self._generate_ambiguous_references(
-                cluster_reps, closest_reps, next_label
+                seeds, next_label
             )
             return {
                 alpha: self._variant(alpha, ambiguous_refs[alpha], bridge_logs[alpha])
@@ -864,4 +809,7 @@ def generate_ambiguous_datasets(
     for input_cfg in config.input_data:
         print("processing", input_cfg.dataset.directory)
         data = load_benchmark_data(input_cfg, root_dir)
-        generation.run(AmbiguityGenerator.from_config(input_cfg, data), data.id_table)
+        generation.run(
+            AmbiguityGenerator.from_config(input_cfg, data, config.pairing_settings()),
+            data.id_table,
+        )

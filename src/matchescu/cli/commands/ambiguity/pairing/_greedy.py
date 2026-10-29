@@ -13,8 +13,8 @@ class Pairing:
 
     :ivar home_cluster_id: id of the cluster the bridge record joins.
     :ivar target_cluster_id: id of the cluster the bridge record links to.
-    :ivar score: ambiguity score of the home and target representatives; the
-        value a minimum-ambiguity threshold is compared against.
+    :ivar score: ambiguity score of the pairing as measured by the affinity;
+        the value a minimum-ambiguity threshold is compared against.
     """
 
     home_cluster_id: int
@@ -22,13 +22,14 @@ class Pairing:
     score: float
 
 
-class PairingStrategy(ABC):
+class ClusterPairing(ABC):
     """Select a target cluster for every home cluster that gets a bridge.
 
-    The ambiguity generator delegates pairing to a strategy so that different
-    selection rules can be swapped in without touching bridge synthesis or
-    threshold analysis. Every strategy shares the same call signature;
-    strategy-specific settings belong in the strategy's constructor.
+    Cluster-level algorithms are the building block of the
+    ``greedy-cluster-reps`` strategy: they pick target clusters only, and the
+    strategy turns each pairing into a bridge seed. Every algorithm shares the
+    same call signature; algorithm-specific settings belong in the
+    constructor.
     """
 
     @abstractmethod
@@ -56,7 +57,7 @@ class PairingStrategy(ABC):
         """
 
 
-class GreedyPairing(PairingStrategy):
+class GreedyPairing(ClusterPairing):
     """Pair each home with its highest-scoring available cluster, in order.
 
     Homes are processed in the given order. A home's candidates are all other

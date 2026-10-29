@@ -1,14 +1,21 @@
+from types import SimpleNamespace
+
 import polars as pl
 import pytest
 
 from matchescu.cli.commands.ambiguity._alpha_sweep import AlphaSweepResult
 from matchescu.cli.commands.ambiguity._analyse import (
     _alpha_sweeps,
+    analyse_threshold,
     build_methodology_rows,
     write_report,
 )
-from matchescu.cli.commands.ambiguity._config import AmbiguityConfig
+from matchescu.cli.commands.ambiguity._config import (
+    AmbiguityConfig,
+    ThresholdAnalysisConfig,
+)
 from matchescu.cli.commands.ambiguity._gmm_fit import GmmFit
+from matchescu.cli.commands.ambiguity.pairing import PairingSummary
 from matchescu.cli.commands.ambiguity.profiling import ProfileOptions
 from matchescu.cli.commands.ambiguity.selection import (
     AlphaChoice,
@@ -50,6 +57,9 @@ def threshold_frame():
             "dataset": ["ds"],
             "threshold": [1.0],
             "bridge_count": [3],
+            "link_count": [6],
+            "short_bridge_count": [1],
+            "target_links": [2],
             "cluster_count": [10],
         }
     )
@@ -76,7 +86,7 @@ def sweep():
 @pytest.fixture
 def row(threshold_frame, fit, sweep):
     (methodology_row,) = build_methodology_rows(
-        [threshold_frame], [fit], [3], [sweep], [SETTINGS]
+        [threshold_frame], [fit], [PairingSummary(3, 5, 1)], [sweep], [SETTINGS]
     )
     return methodology_row
 
@@ -93,6 +103,11 @@ def row(threshold_frame, fit, sweep):
         pytest.param("bridge_component_count", 4, id="component-count"),
         pytest.param("bridge_component_size_avg", 2.35, id="rounded-float"),
         pytest.param("largest_bridge_component_split_load", 1.23, id="split-load"),
+        pytest.param("target_links", 2, id="target-links"),
+        pytest.param("bridge_count_at_theta", 3, id="bridges"),
+        pytest.param("link_count_at_theta", 5, id="links"),
+        pytest.param("link_count_per_cluster", 0.5, id="links-per-cluster"),
+        pytest.param("short_bridge_count_at_theta", 1, id="short-bridges"),
     ],
 )
 def test_methodology_row_value(row, column, expected):
@@ -110,7 +125,7 @@ def test_methodology_rows_use_each_dataset_selection(threshold_frame, fit, sweep
     rows = build_methodology_rows(
         [threshold_frame, other_frame],
         [fit, fit],
-        [3, 3],
+        [PairingSummary(3, 5, 1), PairingSummary(3, 5, 1)],
         [sweep, sweep],
         [SETTINGS, other_settings],
     )
@@ -132,3 +147,45 @@ def test_report_writes_methodology_with_choice(threshold_frame, row, sweep, tmp_
     written = pl.read_csv(tmp_path / "ambiguity_methodology.csv")
 
     assert written["alpha_star"].to_list() == [0.65]
+
+
+class _StubGenerator:
+    settings = SimpleNamespace(target_links=2)
+
+    @staticmethod
+    def best_pairing_scores():
+        return [0.0] * 10 + [10.0] * 10
+
+    @staticmethod
+    def pairing_summaries(min_scores):
+        return [
+            PairingSummary(count, count * 2, 0)
+            for count in range(1, len(min_scores) + 1)
+        ]
+
+
+@pytest.fixture
+def stub_data():
+    return SimpleNamespace(name="ds", compute_clusters=lambda: frozenset({1, 2}))
+
+
+def test_threshold_sweep_frame_carries_link_counts(stub_data):
+    frame, *_ = analyse_threshold(
+        ThresholdAnalysisConfig(step_count=1, gmm_restarts=1),
+        stub_data,
+        _StubGenerator(),
+    )
+
+    assert frame.select(
+        "bridge_count", "link_count", "short_bridge_count", "target_links"
+    ).row(0) == (1, 2, 0, 2)
+
+
+def test_threshold_result_summarises_the_fitted_cutoff(stub_data):
+    _, _, _, at_theta = analyse_threshold(
+        ThresholdAnalysisConfig(step_count=1, gmm_restarts=1),
+        stub_data,
+        _StubGenerator(),
+    )
+
+    assert at_theta == PairingSummary(2, 4, 0)

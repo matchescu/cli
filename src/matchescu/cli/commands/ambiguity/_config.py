@@ -3,6 +3,7 @@ from typing import Annotated, ClassVar, Self
 from matchescu.matching.config import AnyDatasetConfig, ConfigModel
 from pydantic import Field, model_validator
 
+from .pairing import PairingScope, PairingSettings, PairingStrategyName
 from .profiling import ProfileOptions, SplitRatio
 from .selection import SelectionSettings, SeparabilityBounds
 
@@ -142,12 +143,34 @@ class AmbiguityConfig(ConfigModel):
 
     :ivar profiling: profile settings shared by every dataset.
     :ivar analysis: default analysis settings; an entry may replace them.
+    :ivar pairing_strategy: how records of different clusters are paired.
+    :ivar pairing_neighbours: highest-weight partners kept per record by
+        ``simple-pairs``, at least 1.
+    :ivar pairing_scope: whether a ``simple-pairs`` pair must be a top
+        partner of one record or of both.
+    :ivar pairing_max_block_size: largest token block kept by
+        ``simple-pairs``, at least 2.
     :ivar input_data: one entry per input dataset.
     """
 
     profiling: ProfilingConfig = Field(default_factory=ProfilingConfig)
     analysis: AnalysisConfig = Field(default_factory=AnalysisConfig)
+    pairing_strategy: PairingStrategyName = PairingStrategyName.GREEDY_CLUSTER_REPS
+    pairing_neighbours: int = Field(default=PairingSettings.DEFAULT_NEIGHBOURS, ge=1)
+    pairing_scope: PairingScope = PairingScope.ANY
+    pairing_max_block_size: int = Field(
+        default=PairingSettings.DEFAULT_MAX_BLOCK_SIZE, ge=2
+    )
     input_data: list[AmbiguityDataConfig]
+
+    def pairing_settings(self) -> PairingSettings:
+        """Return the pairing strategy and parameters these settings describe."""
+        return PairingSettings(
+            name=self.pairing_strategy,
+            neighbours=self.pairing_neighbours,
+            scope=self.pairing_scope,
+            max_block_size=self.pairing_max_block_size,
+        )
 
     def analysis_for(self, entry: AmbiguityDataConfig) -> AnalysisConfig:
         """Return the analysis settings of one dataset.

@@ -16,13 +16,14 @@ class BridgeLabelStrategy(ABC):
     """
 
     @abstractmethod
-    def __call__(self, home_cluster_id: int) -> Hashable:
-        """Return the label of the bridge record joining a home cluster.
+    def __call__(self, key: Hashable) -> Hashable:
+        """Return the label of one bridge record.
 
-        Called exactly once per bridged home cluster. The label is shared across
-        alpha variants.
+        Called exactly once per bridge. The label is shared across alpha
+        variants.
 
-        :param home_cluster_id: id of the cluster the bridge record joins.
+        :param key: identity of the bridge; strategies derive it from the
+            clusters or records the bridge links.
         :returns: a label not used by any existing reference or earlier
             bridge.
         """
@@ -41,10 +42,10 @@ class IntegerLabels(BridgeLabelStrategy):
     def __init__(self, existing_labels: Collection[Hashable]):
         self.__last = max((int(label) for label in existing_labels), default=0)
 
-    def __call__(self, home_cluster_id: int) -> int:
+    def __call__(self, key: Hashable) -> int:
         """Return the next unused integer label.
 
-        :param home_cluster_id: ignored; the label depends on call order only.
+        :param key: ignored; the label depends on call order only.
         :returns: one more than the previously returned (or largest existing)
             label.
         """
@@ -75,13 +76,13 @@ class Uuid5Labels(BridgeLabelStrategy):
     def __init__(self, dataset_name: str):
         self.__dataset_name = dataset_name
 
-    def __call__(self, home_cluster_id: int) -> str:
-        """Return the UUID label of the bridge joining a home cluster.
+    def __call__(self, key: Hashable) -> str:
+        """Return the UUID label of one bridge.
 
-        :param home_cluster_id: id of the cluster the bridge record joins.
+        :param key: identity of the bridge; hashed into the label.
         :returns: the canonical string form of the version 5 UUID.
         """
-        name = f"{self.__dataset_name}{self.SEPARATOR}{home_cluster_id}"
+        name = f"{self.__dataset_name}{self.SEPARATOR}{key}"
         return str(uuid5(self.NAMESPACE, name))
 
 
