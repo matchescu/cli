@@ -14,11 +14,13 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class AlphaSweepResult:
-    """Profiled alpha grid of one dataset and the alpha chosen from it.
+    """Profiled alpha grid of one dataset and the alphas chosen from it.
 
     :ivar rows: one row per alpha: ``dataset``, ``alpha``, ``feasible``,
-        ``selected``, then the profile columns.
-    :ivar choice: the chosen alpha and why.
+        ``selected_<criterion>`` per configured criterion, then the profile
+        columns.
+    :ivar choices: one choice per configured criterion, keyed by criterion
+        name.
     """
 
     COMPONENT_COLUMNS: ClassVar[tuple[str, ...]] = (
@@ -32,38 +34,51 @@ class AlphaSweepResult:
     )
 
     rows: Sequence[Mapping[str, Any]]
-    choice: AlphaChoice
+    choices: Mapping[str, AlphaChoice]
 
     def summary(self) -> dict[str, Any]:
-        """Return the choice and the bridge component columns.
+        """Return every criterion's choice and the bridge component columns.
 
         Bridges do not depend on alpha, so neither do their components; the
         component columns are read from the first row.
         """
         first = self.rows[0] if self.rows else {}
         return {
-            "alpha_star": self.choice.alpha,
-            "alpha_star_reason": self.choice.reason,
-            "n_feasible_alphas": self.choice.n_feasible,
+            **{
+                f"alpha_star_{criterion}": choice.alpha
+                for criterion, choice in self.choices.items()
+            },
+            **{
+                f"alpha_star_{criterion}_reason": choice.reason
+                for criterion, choice in self.choices.items()
+            },
+            "n_feasible_alphas": next(
+                (choice.n_feasible for choice in self.choices.values()), 0
+            ),
             **{column: first.get(column) for column in self.COMPONENT_COLUMNS},
         }
 
 
 class AlphaSweep:
-    """Profile every alpha of a generator's grid and choose one of them.
+    """Profile every alpha of a generator's grid and choose one per criterion.
 
     The generator runs at its configured minimum ambiguity, so for a given
     threshold the swept bridges are exactly the bridges ``generate`` writes.
+    Every configured criterion sees the same profiled rows.
 
-    :param selector: chooses the alpha from the profiled rows.
+    :param selectors: one selector per criterion; each chooses an alpha from
+        the profiled rows.
     :param options: settings of every profile.
-    :raises ValueError: when the selector's criterion needs a profile option
+    :raises ValueError: when a selector's criterion needs a profile option
         that `options` switches off; raised before any work is done.
     """
 
-    def __init__(self, selector: AlphaSelector, options: ProfileOptions) -> None:
-        selector.check_requirements(options)
-        self.__selector = selector
+    def __init__(
+        self, selectors: Sequence[AlphaSelector], options: ProfileOptions
+    ) -> None:
+        for selector in selectors:
+            selector.check_requirements(options)
+        self.__selectors = tuple(selectors)
         self.__options = options
 
     def run(
@@ -74,7 +89,7 @@ class AlphaSweep:
         :param generator: generator configured with the alpha grid.
         :param id_table: original records of the dataset.
         :param dataset: label written to the ``dataset`` column.
-        :returns: the sweep rows and the chosen alpha.
+        :returns: the sweep rows and the per-criterion chosen alphas.
         """
         profiler = VariantProfiler(
             id_table, generator.settings.ambiguity_targets, self.__options
@@ -83,17 +98,28 @@ class AlphaSweep:
             {"alpha": alpha, **profiler.profile(variant)}
             for alpha, variant in generator().items()
         ]
-        choice = self.__selector.choose(profiled)
-        rows = [self.__row(dataset, row, choice) for row in profiled]
-        return AlphaSweepResult(tuple(rows), choice)
+        choices = {
+            selector.criterion: selector.choose(profiled)
+            for selector in self.__selectors
+        }
+        rows = [self.__row(dataset, row, choices) for row in profiled]
+        return AlphaSweepResult(tuple(rows), choices)
 
     def __row(
-        self, dataset: str, profiled: Mapping[str, Any], choice: AlphaChoice
+        self,
+        dataset: str,
+        profiled: Mapping[str, Any],
+        choices: Mapping[str, AlphaChoice],
     ) -> dict[str, Any]:
         return {
             "dataset": dataset,
             "alpha": profiled["alpha"],
-            "feasible": self.__selector.is_feasible(profiled),
-            "selected": profiled["alpha"] == choice.alpha,
+            "feasible": any(
+                selector.is_feasible(profiled) for selector in self.__selectors
+            ),
+            **{
+                f"selected_{criterion}": profiled["alpha"] == choice.alpha
+                for criterion, choice in choices.items()
+            },
             **profiled,
         }

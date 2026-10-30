@@ -176,7 +176,7 @@ def test_invalid_profiling_raises(profiling):
 def test_selection_defaults_to_default_settings():
     sut = AmbiguityConfig.model_validate({"inputData": []})
 
-    assert sut.analysis.selection.to_selection_settings() == SelectionSettings()
+    assert sut.analysis.selection.to_selection_settings() == [SelectionSettings()]
 
 
 def test_selection_parses_every_camel_case_key():
@@ -190,9 +190,38 @@ def test_selection_parses_every_camel_case_key():
         }
     )
 
-    assert sut.to_selection_settings() == SelectionSettings(
-        SeparabilityBounds(0.3, 0.85), "gmm-balance", 0.4, 0.8
+    assert sut.to_selection_settings() == [
+        SelectionSettings(SeparabilityBounds(0.3, 0.85), "gmm-balance", 0.4, 0.8)
+    ]
+
+
+def test_selection_accepts_a_list_of_criteria():
+    sut = SelectionConfig.model_validate(
+        {"criterion": ["smallest", "gmm-balance", "order-headroom"]}
     )
+
+    assert [s.criterion for s in sut.to_selection_settings()] == [
+        "smallest",
+        "gmm-balance",
+        "order-headroom",
+    ]
+
+
+def test_selection_wraps_a_single_criterion_into_a_list():
+    sut = SelectionConfig.model_validate({"criterion": "smallest"})
+
+    assert sut.criteria() == ["smallest"]
+
+
+def test_selection_deduplicates_repeated_criteria():
+    sut = SelectionConfig.model_validate({"criterion": ["smallest", "smallest"]})
+
+    assert sut.criteria() == ["smallest"]
+
+
+def test_selection_list_with_unknown_criterion_raises():
+    with pytest.raises(ValidationError, match="criterion"):
+        SelectionConfig.model_validate({"criterion": ["smallest", "largest"]})
 
 
 @pytest.mark.parametrize(
@@ -220,6 +249,12 @@ def test_dataset_analysis_parses_from_entry(make_entry):
     assert sut.analysis.threshold.step_count == 3
 
 
+def test_dataset_analysis_defaults_threshold_to_auto(make_entry):
+    sut = make_entry(analysis={"selection": {"criterion": "smallest"}})
+
+    assert sut.analysis.threshold.sweep_range(1.0) == (-4.0, 11, 1.0)
+
+
 def test_dataset_analysis_without_selection_uses_default_selection(make_entry):
     sut = make_entry(analysis={"threshold": {"stepCount": 3}})
 
@@ -239,7 +274,7 @@ def test_analysis_for_returns_dataset_node_when_present():
         }
     )
 
-    assert sut.analysis_for(sut.input_data[0]).selection.criterion == "gmm-balance"
+    assert sut.analysis_for(sut.input_data[0]).selection.criteria() == ["gmm-balance"]
 
 
 def test_analysis_for_returns_top_level_node_when_absent():
@@ -250,7 +285,7 @@ def test_analysis_for_returns_top_level_node_when_absent():
         }
     )
 
-    assert sut.analysis_for(sut.input_data[0]).selection.criterion == "gmm-balance"
+    assert sut.analysis_for(sut.input_data[0]).selection.criteria() == ["gmm-balance"]
 
 
 def test_invalid_dataset_analysis_raises(make_entry):
@@ -258,12 +293,19 @@ def test_invalid_dataset_analysis_raises(make_entry):
         make_entry(analysis={"selection": {"criterion": "largest"}})
 
 
-def test_threshold_analysis_defaults():
+def test_min_ambiguity_accepts_the_auto_literal(make_entry):
+    assert make_entry(minAmbiguity="auto").min_ambiguity == "auto"
+
+
+def test_min_ambiguity_defaults_to_no_filter(make_entry):
+    assert make_entry().min_ambiguity is None
+
+
+def test_threshold_analysis_defaults_to_auto_sweep():
     sut = AmbiguityConfig.model_validate({"inputData": []}).analysis.threshold
 
-    assert sut == ThresholdAnalysisConfig(
-        start_value=0.0, step_count=10, step_size=1.0, gmm_restarts=50
-    )
+    assert sut == ThresholdAnalysisConfig(gmm_restarts=50)
+    assert sut.sweep_range(3.0) == (3.0 - 5.0, 11, 1.0)
 
 
 def test_threshold_analysis_parses_every_camel_case_key():
@@ -274,6 +316,7 @@ def test_threshold_analysis_parses_every_camel_case_key():
     assert sut == ThresholdAnalysisConfig(
         start_value=2.0, step_count=4, step_size=0.5, gmm_restarts=5
     )
+    assert sut.sweep_range(100.0) == (2.0, 4, 0.5)
 
 
 @pytest.mark.parametrize(

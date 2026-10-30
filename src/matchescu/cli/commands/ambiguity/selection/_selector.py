@@ -20,7 +20,13 @@ class AlphaSelector:
 
     def __init__(self, settings: SelectionSettings) -> None:
         self.__bounds = settings.bounds
+        self.__criterion_name = settings.criterion
         self.__criterion = ALPHA_CRITERIA[settings.criterion].from_settings(settings)
+
+    @property
+    def criterion(self) -> str:
+        """The name of the criterion this selector applies."""
+        return self.__criterion_name
 
     def check_requirements(self, options: ProfileOptions) -> None:
         """Fail early when the profile will lack the criterion's columns.

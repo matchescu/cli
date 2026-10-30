@@ -24,6 +24,7 @@ from matchescu.cli.commands.ambiguity.selection import (
 )
 
 SETTINGS = SelectionSettings(SeparabilityBounds(0.3, 0.85), "gmm-balance", 0.4)
+SETTINGS_LIST = [SETTINGS]
 
 DATASET = {
     "type": "csv",
@@ -73,20 +74,22 @@ def fit():
 @pytest.fixture
 def sweep():
     rows = (
-        {"dataset": "ds", "alpha": 0.5, "feasible": False, "selected": False,
+        {"dataset": "ds", "alpha": 0.5, "feasible": False, "selected_gmm-balance": False,
          "bridge_component_count": 4, "bridge_component_size_avg": 2.3456,
          "largest_bridge_component_split_load": 1.23456},
-        {"dataset": "ds", "alpha": 0.65, "feasible": True, "selected": True,
+        {"dataset": "ds", "alpha": 0.65, "feasible": True, "selected_gmm-balance": True,
          "bridge_component_count": 4, "bridge_component_size_avg": 2.3456,
          "largest_bridge_component_split_load": 1.23456},
     )  # fmt: skip
-    return AlphaSweepResult(rows, AlphaChoice(0.65, AlphaChoice.SELECTED, 1))
+    return AlphaSweepResult(
+        rows, {"gmm-balance": AlphaChoice(0.65, AlphaChoice.SELECTED, 1)}
+    )
 
 
 @pytest.fixture
 def row(threshold_frame, fit, sweep):
     (methodology_row,) = build_methodology_rows(
-        [threshold_frame], [fit], [PairingSummary(3, 5, 1)], [sweep], [SETTINGS]
+        [threshold_frame], [fit], [PairingSummary(3, 5, 1)], [sweep], [SETTINGS_LIST]
     )
     return methodology_row
 
@@ -97,8 +100,8 @@ def row(threshold_frame, fit, sweep):
         pytest.param("theta", 1.23, id="threshold-columns-kept"),
         pytest.param("alpha_criterion", "gmm-balance", id="selection-settings"),
         pytest.param("max_auc", 0.85, id="bounds"),
-        pytest.param("alpha_star", 0.65, id="choice"),
-        pytest.param("alpha_star_reason", "selected", id="reason"),
+        pytest.param("alpha_star_gmm-balance", 0.65, id="choice"),
+        pytest.param("alpha_star_gmm-balance_reason", "selected", id="reason"),
         pytest.param("n_feasible_alphas", 1, id="feasible-count"),
         pytest.param("bridge_component_count", 4, id="component-count"),
         pytest.param("bridge_component_size_avg", 2.35, id="rounded-float"),
@@ -127,10 +130,24 @@ def test_methodology_rows_use_each_dataset_selection(threshold_frame, fit, sweep
         [fit, fit],
         [PairingSummary(3, 5, 1), PairingSummary(3, 5, 1)],
         [sweep, sweep],
-        [SETTINGS, other_settings],
+        [SETTINGS_LIST, [other_settings]],
     )
 
     assert [row["alpha_criterion"] for row in rows] == ["gmm-balance", "smallest"]
+
+
+def test_methodology_row_lists_every_criterion(threshold_frame, fit, sweep):
+    other = SelectionSettings(SeparabilityBounds(0.3, 0.85), "smallest", 0.4)
+
+    (row,) = build_methodology_rows(
+        [threshold_frame],
+        [fit],
+        [PairingSummary(3, 5, 1)],
+        [sweep],
+        [[SETTINGS, other]],
+    )
+
+    assert row["alpha_criterion"] == "gmm-balance,smallest"
 
 
 def test_report_writes_alpha_sweep_rows(threshold_frame, row, sweep, tmp_path):
@@ -139,14 +156,17 @@ def test_report_writes_alpha_sweep_rows(threshold_frame, row, sweep, tmp_path):
     written = pl.read_csv(tmp_path / "ambiguity_alpha_sweep.csv")
 
     assert written["alpha"].to_list() == [0.5, 0.65]
+    assert written["selected_gmm-balance"].to_list() == [False, True]
 
 
-def test_report_writes_methodology_with_choice(threshold_frame, row, sweep, tmp_path):
+def test_report_writes_methodology_with_choice_per_criterion(
+    threshold_frame, row, sweep, tmp_path
+):
     write_report([threshold_frame], [row], list(sweep.rows), tmp_path)
 
     written = pl.read_csv(tmp_path / "ambiguity_methodology.csv")
 
-    assert written["alpha_star"].to_list() == [0.65]
+    assert written["alpha_star_gmm-balance"].to_list() == [0.65]
 
 
 class _StubGenerator:
@@ -182,10 +202,32 @@ def test_threshold_sweep_frame_carries_link_counts(stub_data):
 
 
 def test_threshold_result_summarises_the_fitted_cutoff(stub_data):
-    _, _, _, at_theta = analyse_threshold(
+    _, fit, _, at_theta = analyse_threshold(
         ThresholdAnalysisConfig(step_count=1, gmm_restarts=1),
         stub_data,
         _StubGenerator(),
     )
 
     assert at_theta == PairingSummary(2, 4, 0)
+    assert 0.0 < fit.threshold < 10.0
+
+
+def test_threshold_sweep_defaults_to_theta_plus_minus_five(stub_data):
+    frame, fit, *_ = analyse_threshold(
+        ThresholdAnalysisConfig(gmm_restarts=1), stub_data, _StubGenerator()
+    )
+
+    theta = fit.threshold
+    assert frame["threshold"].to_list() == pytest.approx(
+        [theta - 5.0 + i for i in range(11)]
+    )
+
+
+def test_threshold_sweep_keeps_explicit_range(stub_data):
+    frame, *_ = analyse_threshold(
+        ThresholdAnalysisConfig(start_value=2.0, step_count=4, step_size=0.5),
+        stub_data,
+        _StubGenerator(),
+    )
+
+    assert frame["threshold"].to_list() == [2.0, 2.5, 3.0, 3.5]

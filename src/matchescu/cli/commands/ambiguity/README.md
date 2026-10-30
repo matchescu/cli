@@ -145,20 +145,14 @@ top-level pairing keys and an `inputData` list with one entry per dataset. Only
     ]
   },
   "analysis": {
-    "selection": {
-      "criterion": "order-headroom",
-      "minSeparability": 0.2,
-      "maxAuc": 0.9,
-      "targetResolvable": 0.5,
-      "maxDetectAuc": 0.7
-    },
-    "threshold": {
-      "startValue": 0.0,
-      "stepCount": 10,
-      "stepSize": 1.0,
-      "gmmRestarts": 50
-    }
-  },
+     "selection": {
+       "criterion": ["smallest", "gmm-balance", "order-headroom"],
+       "minSeparability": 0.2,
+       "maxAuc": 0.9,
+       "targetResolvable": 0.5,
+       "maxDetectAuc": 0.7
+     }
+   },
   "inputData": [
     {
       "dataset": {
@@ -192,24 +186,24 @@ top-level pairing keys and an `inputData` list with one entry per dataset. Only
         },
         "clusterMapping": "fodors_zagat_nophone_cluster_mapping.csv"
       },
-      "ambiguityTargets": [
-        "name",
-        "addr",
-        "type"
-      ],
-      "minAmbiguity": 4.25,
-      "alphas": [
-        0.5,
-        0.6,
-        0.7,
-        0.8,
-        0.9
-      ],
-      "targetFloor": 0.0,
-      "targetLinks": 1
-    }
-  ]
-}
+       "ambiguityTargets": [
+         "name",
+         "addr",
+         "type"
+       ],
+       "minAmbiguity": "auto",
+       "alphas": [
+         0.5,
+         0.6,
+         0.7,
+         0.8,
+         0.9
+       ],
+       "targetFloor": 0.0,
+       "targetLinks": 1
+     }
+   ]
+ }
 ```
 
 ### Pairing (top level, all datasets)
@@ -228,7 +222,7 @@ top-level pairing keys and an `inputData` list with one entry per dataset. Only
 | `dataset`           | required | both    | Where the dataset lives and how its files look. Same format as the `matching` package's dataset configs.                                                                                    |
 | `ambiguityTargets`  | none     | both    | Fields that receive blended values. The profile compares records on these fields only, so at least one is needed.                                                                           |
 | `secondaryFeatures` | none     | both    | Fields copied from the home representative. Must not overlap `ambiguityTargets` and must not be one of the reserved values `source`, `target` or `target_cluster_id`.                       |
-| `minAmbiguity`      | none     | both    | Minimum pairing score of a bridge. Omit it to keep every pairing.                                                                                                                           |
+| `minAmbiguity`      | none     | both    | Minimum pairing score of a bridge. Omit it to keep every pairing; `"auto"` lets `analyse` set it to the fitted θ (rejected by `generate`).                                                  |
 | `alphas`            | required | both    | One or more values in (0, 1). `analyse` searches them; `generate` writes one variant per value.                                                                                             |
 | `targetFloor`       | `0.0`    | both    | In [0, 1]. See [Concepts](#concepts).                                                                                                                                                       |
 | `targetLinks`       | `1`      | both    | One-way pairs per bridge, at least 1. Also sets how many target members the pairing score covers. Values above 1 add `_kN` to output names. Ignored by `simple-pairs`, which always uses 1. |
@@ -256,17 +250,21 @@ An `inputData[]` entry may carry its own `analysis` block. When it does,
 that block replaces the top-level one for the dataset; when it does not,
 the top-level block applies.
 
-| Key                          | Default    | Meaning                                                                 |
-|------------------------------|------------|-------------------------------------------------------------------------|
-| `selection.criterion`        | `smallest` | How to choose alpha. See [criteria](#choosing-alpha).                   |
-| `selection.minSeparability`  | `0.2`      | Lowest separability an alpha may have.                                  |
-| `selection.maxAuc`           | `0.9`      | Highest content AUC (read in its stronger direction) an alpha may have. |
-| `selection.targetResolvable` | `0.5`      | Share of resolvable bridges `gmm-balance` aims for.                     |
-| `selection.maxDetectAuc`     | `0.7`      | Highest detectability `order-headroom` accepts. In [0.5, 1].            |
-| `threshold.startValue`       | `0.0`      | First threshold of the sweep.                                           |
-| `threshold.stepCount`        | `10`       | Number of thresholds. At least 1.                                       |
-| `threshold.stepSize`         | `1.0`      | Distance between thresholds. At least 0.1.                              |
-| `threshold.gmmRestarts`      | `50`       | Restarts of the theta fit. More restarts give a steadier theta.         |
+| Key                          | Default    | Meaning                                                                                                             |
+|------------------------------|------------|---------------------------------------------------------------------------------------------------------------------|
+| `selection.criterion`        | `smallest` | How to choose alpha: one name or a list of names; every criterion gets its own α*. See [criteria](#choosing-alpha). |
+| `selection.minSeparability`  | `0.2`      | Lowest separability an alpha may have.                                                                              |
+| `selection.maxAuc`           | `0.9`      | Highest content AUC (read in its stronger direction) an alpha may have.                                             |
+| `selection.targetResolvable` | `0.5`      | Share of resolvable bridges `gmm-balance` aims for.                                                                 |
+| `selection.maxDetectAuc`     | `0.7`      | Highest detectability `order-headroom` accepts. In [0.5, 1].                                                        |
+| `threshold.startValue`       | auto       | First threshold of the sweep. Omit it (or the whole range) for θ−5.                                                 |
+| `threshold.stepCount`        | auto       | Number of thresholds. At least 1. Omitted, the sweep runs 11 points.                                                |
+| `threshold.stepSize`         | auto       | Distance between thresholds. At least 0.1. Omitted, the sweep steps 1.0.                                            |
+| `threshold.gmmRestarts`      | `50`       | Restarts of the theta fit. More restarts give a steadier theta.                                                     |
+
+When `startValue`, `stepCount` or `stepSize` is omitted, the missing pieces
+of the sweep range are derived from the fitted θ: the sweep covers
+`θ − 5 … θ + 5` in 11 steps of 1.0. Set all three to keep a fixed range.
 
 Invalid values stop the command before any data is loaded, with a message
 naming the key. Unknown keys are ignored silently, so a misspelt key falls
@@ -291,16 +289,25 @@ matchescu [-d ROOT] ambiguity generate -c CONFIG -O DIR
 writes a report.
 
 **Threshold search.** It pairs clusters without any minimum, fits theta to
-the pairing scores and counts bridges at `stepCount` thresholds. It ignores
-`minAmbiguity`. A dataset with fewer than two pairing scores is skipped with a
-warning.
+the pairing scores and counts bridges at the sweep thresholds: θ−5…θ+5 in 11
+steps when the range is not configured, the configured range otherwise. It
+ignores `minAmbiguity`. A dataset with fewer than two pairing scores is
+skipped with a warning.
 
 **Alpha search.** It generates every alpha in `alphas` at the configured
-`minAmbiguity`, profiles each variant and chooses one alpha. An alpha is *feasible* when its separability lies between
+`minAmbiguity` (or at θ when `minAmbiguity` is `"auto"`), profiles each
+variant once and applies every configured criterion to the same rows. An
+alpha is *feasible* when its separability lies between
 `minSeparability` and
-`2 × maxAuc − 1`. The criterion then picks one feasible alpha.
+`2 × maxAuc − 1`. Each criterion then picks one feasible alpha.
 
 ### Choosing alpha
+
+`selection.criterion` takes one name or a list of names. Every criterion in
+the list is applied to the same profiled sweep, so one run reports an α* per
+criterion (`alpha_star_<criterion>` in the methodology CSV,
+`selected_<criterion>` in the sweep CSV, one `alpha_sweep_<dataset>_<criterion>.png`
+per criterion).
 
 | Criterion        | Picks                                                                              | Needs                                       |
 |------------------|------------------------------------------------------------------------------------|---------------------------------------------|
@@ -314,14 +321,14 @@ stops at once with a usage error.
 
 ### Output files (in `--plot-dir`)
 
-| File                            | Content                                                                                                                                    |
-|---------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------|
-| `ambiguity_methodology.csv`     | One row per dataset: theta, the fit, bridges and links at theta, the selection settings, the chosen alpha and the bridge components. **Start here.** |
-| `ambiguity_alpha_sweep.csv`     | One row per dataset and alpha: `feasible`, `selected` and the full profile.                                                                |
-| `ambiguity_threshold_sweep.csv` | Bridge count, link count and short-bridge count per threshold, at the configured `targetLinks`.                                             |
-| `gmm_fit_<dataset>.png`         | Pairing-score histogram with the two Gaussians and theta.                                                                                  |
-| `alpha_sweep_<dataset>.png`     | Separability and resolvable share per alpha, with the feasible band.                                                                       |
-| `threshold_analysis.png`        | Bridge counts against thresholds for all datasets.                                                                                         |
+| File                                    | Content                                                                                                                                                                                       |
+|-----------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `ambiguity_methodology.csv`             | One row per dataset: theta, the fit, bridges and links at theta, the selection settings, one chosen alpha per criterion (`alpha_star_<criterion>`) and the bridge components. **Start here.** |
+| `ambiguity_alpha_sweep.csv`             | One row per dataset and alpha: `feasible`, `selected_<criterion>` per criterion and the full profile.                                                                                         |
+| `ambiguity_threshold_sweep.csv`         | Bridge count, link count and short-bridge count per threshold, at the configured `targetLinks`.                                                                                               |
+| `gmm_fit_<dataset>.png`                 | Pairing-score histogram with the two Gaussians and theta.                                                                                                                                     |
+| `alpha_sweep_<dataset>_<criterion>.png` | Separability, resolvable share, `surface_auc_gap` and `detect_auc_lr` per alpha, the feasible band and that criterion's α*.                                                                   |
+| `threshold_analysis.png`                | Bridge counts against thresholds for all datasets.                                                                                                                                            |
 
 The `dataset` column uses short display names for some datasets, for example
 `fodors-zagat-nophone` for `fodors_zagat_nophone`.
@@ -338,8 +345,8 @@ In `ambiguity_methodology.csv`:
 | `bridge_count_at_theta`, `bridge_count_per_cluster` | How many bridges theta leaves.                                                                                                       |
 | `link_count_at_theta`, `link_count_per_cluster`     | How many one-way (label-2) pairs theta leaves.                                                                                       |
 | `short_bridge_count_at_theta`                       | Bridges whose target cluster has fewer than `targetLinks` members, so they get fewer links than requested.                           |
-| `alpha_star`                                        | The chosen alpha, empty when none qualifies.                                                                                         |
-| `alpha_star_reason`                                 | `selected`, or why nothing was chosen (see [Troubleshooting](#troubleshooting)).                                                     |
+| `alpha_star_<criterion>`                            | The alpha chosen by that criterion, empty when none qualifies.                                                                       |
+| `alpha_star_<criterion>_reason`                     | `selected`, or why nothing was chosen (see [Troubleshooting](#troubleshooting)).                                                     |
 | `n_feasible_alphas`                                 | Alphas inside the separability band.                                                                                                 |
 | `largest_bridge_component_split_load`               | One-way pairs of the largest component divided by the one-way quota of the smallest split. Above 1, a leak-free split is impossible. |
 
@@ -360,13 +367,13 @@ In `ambiguity_alpha_sweep.csv`, per alpha:
 
 `generate` writes, for each dataset and each alpha in `alphas`:
 
-| Path in `-O`                            | Content                                                                                                                                           |
-|-----------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------|
-| `amb_<name>_a<alpha>[_kN]/`             | Undirected variant: every positive pair has label 1.                                                                                              |
-| `amb_<name>_a<alpha>[_kN]_dir/`         | Directed variant: one-way pairs have label 2. Use this one for directional matching.                                                              |
-| `amb_<name>_bridge_log.csv`             | Every blended value: alpha, fields, `sim_home`, `sim_target`, `share_home`, whether the floor or a fallback was used.                             |
-| `amb_<name>[_kN]_link_log.csv`          | Every one-way link and its ambiguity score.                                                                                                       |
-| `amb_<name>[_kN]_bridge_components.csv` | The bridge components.                                                                                                                            |
+| Path in `-O`                            | Content                                                                                                                                                                                                                                       |
+|-----------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `amb_<name>_a<alpha>[_kN]/`             | Undirected variant: every positive pair has label 1.                                                                                                                                                                                          |
+| `amb_<name>_a<alpha>[_kN]_dir/`         | Directed variant: one-way pairs have label 2. Use this one for directional matching.                                                                                                                                                          |
+| `amb_<name>_bridge_log.csv`             | Every blended value: alpha, fields, `sim_home`, `sim_target`, `share_home`, whether the floor or a fallback was used.                                                                                                                         |
+| `amb_<name>[_kN]_link_log.csv`          | Every one-way link and its ambiguity score.                                                                                                                                                                                                   |
+| `amb_<name>[_kN]_bridge_components.csv` | The bridge components.                                                                                                                                                                                                                        |
 | `metadata.csv`                          | One row per variant: the settings used, the pairing strategy and the full profile. Rows are replaced by name, so repeated runs into the same directory build one table. Write runs with different strategies to different output directories. |
 
 `<name>` is the last part of `dataset.directory`. `<alpha>` is alpha in
@@ -388,29 +395,31 @@ hundredths, for example `a065` for 0.65. Each variant directory holds
    bridge should keep from home (a year, an identifier) in
    `secondaryFeatures`. Every other field that differs between the two
    representatives is emptied in the bridge.
-3. **Write a coarse search.** Leave `minAmbiguity` out, set
-   `"alphas": [0.5, 0.6, 0.7, 0.8, 0.9]`, and keep the default `analysis`
-   block.
+3. **Write a coarse search.** Set `"minAmbiguity": "auto"` (the alpha sweep
+    then runs at the fitted θ), set
+    `"alphas": [0.5, 0.6, 0.7, 0.8, 0.9]`, and keep the default `analysis`
+    block.
 4. **Run `analyse`.**
-   ```bash
-   matchescu -d <workspace> ambiguity analyse -c my-config.json --plot-dir reports/my-dataset
-   ```
-5. **Set the threshold.** Read `theta` in `ambiguity_methodology.csv` and
-   check `gmm_fit_<dataset>.png`. If `boundary_type` is `bayes_optimal`, set
-   `minAmbiguity` to `theta`. If it is `mean_midpoint`, pick a value from
-   `threshold_analysis.png` that keeps enough bridges.
-6. **Run `analyse` again.** The alpha search now uses the threshold you set.
-   Refine `alphas` around the interesting range if needed.
-7. **Choose alpha.** Read `alpha_star` and `alpha_star_reason`. If no alpha
-   was chosen, see [Troubleshooting](#troubleshooting).
-8. **Write the generate configuration.** Copy the file and set `alphas` to
-   the values you want to publish, for example `[0.5, alpha_star]`.
-9. **Run `generate`.**
+    ```bash
+    matchescu -d <workspace> ambiguity analyse -c my-config.json --plot-dir reports/my-dataset
+    ```
+5. **Check the threshold.** Read `theta` in `ambiguity_methodology.csv` and
+    check `gmm_fit_<dataset>.png`. The threshold sweep now spans θ−5…θ+5
+    automatically; use `threshold_analysis.png` to see how many bridges each
+    cutoff keeps. To pin a fixed range instead, set `threshold.startValue`,
+    `stepCount` and `stepSize`.
+6. **Choose alpha.** Read `alpha_star_<criterion>` and
+    `alpha_star_<criterion>_reason` per criterion. If no alpha was chosen, see
+    [Troubleshooting](#troubleshooting).
+7. **Write the generate configuration.** Copy the file, replace
+    `"minAmbiguity": "auto"` with the numeric `theta`, and set `alphas` to
+    the values you want to publish, for example `[0.5, alpha_star]`.
+8. **Run `generate`.**
    ```bash
    mkdir -p data/ambiguous
    matchescu -d <workspace> ambiguity generate -c my-generate-config.json -O data/ambiguous
    ```
-10. **Check `metadata.csv`.** The rows must show your settings and the same
+9. **Check `metadata.csv`.** The rows must show your settings and the same
     profile values that `analyse` reported for these alphas.
 
 ## Recipe: datasets for learning directional matching
@@ -442,17 +451,17 @@ cross-attention.
     - `"targetFloor": 0.0` (a floor of 0.5 changed fewer than 5% of values in
       experiments 06 and 07);
     - `"targetLinks": 1` (the split keeps one one-way pair per bridge).
-2. **Run `analyse`** and settle `minAmbiguity` as in the
-   [workflow](#workflow-for-a-new-dataset), steps 5 and 6.
+2. **Run `analyse`** with `"minAmbiguity": "auto"`, as in the
+    [workflow](#workflow-for-a-new-dataset).
 3. **Decide per dataset.**
 
-   | Outcome                                              | Meaning                                         | Action | 
-         |------------------------------------------------------|-------------------------------------------------|--------|
-   | `selected` and `surface_auc_gap > 0`                 | Order carries direction.                        | Generate `[0.5, alpha_star]`. |
-   | `selected` and `surface_auc_gap ≤ 0`                 | Direction is in similarity only, not in order.  | Do not use the dataset to test order learning. |
-   | `no_feasible_alpha`, separability below 0.2 for every alpha | The text carries no direction.          | Add fields to `ambiguityTargets`, or drop the dataset. |
-   | `no_feasible_alpha`, content AUC above 0.9 for every alpha | Similarity alone solves direction.       | Search a finer grid near 0.5, for example 0.50 to 0.62 in steps of 0.02. |
-   | `no_undetectable_alpha`                              | Bridges are easy to spot at every feasible alpha. | Read `detect_best_feature`. When it is `n_tokens` or `n_chars`, set `maxLengthRatio` and run again. Otherwise drop the dataset, or raise `maxDetectAuc` and record that you did. |
+| Outcome                                                     | Meaning                                           | Action                                                                                                                                                                           | 
+|-------------------------------------------------------------|---------------------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `selected` and `surface_auc_gap > 0`                        | Order carries direction.                          | Generate `[0.5, alpha_star]`.                                                                                                                                                    |
+| `selected` and `surface_auc_gap ≤ 0`                        | Direction is in similarity only, not in order.    | Do not use the dataset to test order learning.                                                                                                                                   |
+| `no_feasible_alpha`, separability below 0.2 for every alpha | The text carries no direction.                    | Add fields to `ambiguityTargets`, or drop the dataset.                                                                                                                           |
+| `no_feasible_alpha`, content AUC above 0.9 for every alpha  | Similarity alone solves direction.                | Search a finer grid near 0.5, for example 0.50 to 0.62 in steps of 0.02.                                                                                                         |
+| `no_undetectable_alpha`                                     | Bridges are easy to spot at every feasible alpha. | Read `detect_best_feature`. When it is `n_tokens` or `n_chars`, set `maxLengthRatio` and run again. Otherwise drop the dataset, or raise `maxDetectAuc` and record that you did. |
 
 4. **Check the chosen variant.**
     - `largest_bridge_component_split_load` must be at most 1.

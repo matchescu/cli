@@ -43,9 +43,12 @@ def make_generator(id_table, clusters):
 
 @pytest.fixture
 def make_result(make_generator, id_table):
-    def _make(bounds=EVERY_ALPHA, alphas=(0.5, 0.8)):
-        selector = AlphaSelector(SelectionSettings(bounds, "smallest"))
-        sweep = AlphaSweep(selector, ProfileOptions())
+    def _make(bounds=EVERY_ALPHA, alphas=(0.5, 0.8), criteria=("smallest",)):
+        selectors = [
+            AlphaSelector(SelectionSettings(bounds, criterion))
+            for criterion in criteria
+        ]
+        sweep = AlphaSweep(selectors, ProfileOptions())
         return sweep.run(make_generator(alphas), id_table, LABEL)
 
     return _make
@@ -74,26 +77,38 @@ def test_rows_flag_feasible_alphas(make_result, bounds, expected):
     assert [row["feasible"] for row in make_result(bounds).rows] == expected
 
 
-def test_rows_flag_selected_alpha(make_result):
-    assert [row["selected"] for row in make_result().rows] == [True, False]
+def test_rows_flag_alpha_selected_per_criterion(make_result):
+    result = make_result(criteria=("smallest", "gmm-balance"))
+
+    assert [row["selected_smallest"] for row in result.rows] == [True, False]
+    assert [row["selected_gmm-balance"] for row in result.rows] == [False, False]
 
 
-def test_choice_selects_smallest_feasible_alpha(make_result):
-    assert make_result().choice == AlphaChoice(0.5, AlphaChoice.SELECTED, 2)
+def test_choices_hold_one_choice_per_criterion(make_result):
+    result = make_result(criteria=("smallest", "gmm-balance"))
+
+    assert result.choices["smallest"] == AlphaChoice(0.5, AlphaChoice.SELECTED, 2)
+    assert result.choices["gmm-balance"] == AlphaChoice(
+        None, AlphaChoice.NO_BAYES_OPTIMAL_FIT, 2
+    )
 
 
 def test_choice_without_feasible_alpha_is_reported(make_result):
-    assert make_result(NO_ALPHA).choice == AlphaChoice(
+    result = make_result(NO_ALPHA)
+
+    assert result.choices["smallest"] == AlphaChoice(
         None, AlphaChoice.NO_FEASIBLE_ALPHA, 0
     )
 
 
-def test_summary_reports_choice_and_bridge_components(make_result):
-    summary = make_result().summary()
+def test_summary_reports_choice_per_criterion_and_bridge_components(make_result):
+    summary = make_result(criteria=("smallest", "gmm-balance")).summary()
 
     assert summary == {
-        "alpha_star": 0.5,
-        "alpha_star_reason": AlphaChoice.SELECTED,
+        "alpha_star_smallest": 0.5,
+        "alpha_star_gmm-balance": None,
+        "alpha_star_smallest_reason": AlphaChoice.SELECTED,
+        "alpha_star_gmm-balance_reason": AlphaChoice.NO_BAYES_OPTIMAL_FIT,
         "n_feasible_alphas": 2,
         "bridge_component_count": 1,
         "bridge_component_size_avg": 2.0,
@@ -106,7 +121,9 @@ def test_summary_reports_choice_and_bridge_components(make_result):
 
 
 def test_summary_of_empty_sweep_leaves_component_columns_empty():
-    result = AlphaSweepResult((), AlphaChoice(None, AlphaChoice.NO_FEASIBLE_ALPHA, 0))
+    result = AlphaSweepResult(
+        (), {"smallest": AlphaChoice(None, AlphaChoice.NO_FEASIBLE_ALPHA, 0)}
+    )
 
     assert result.summary()["largest_bridge_component_clusters"] is None
 
@@ -115,7 +132,7 @@ def test_sweep_rejects_criterion_lacking_profile_option():
     selector = AlphaSelector(SelectionSettings(EVERY_ALPHA, "surface-gap"))
 
     with pytest.raises(ValueError, match="surface_baseline"):
-        AlphaSweep(selector, ProfileOptions())
+        AlphaSweep([selector], ProfileOptions())
 
 
 @pytest.mark.parametrize(

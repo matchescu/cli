@@ -148,23 +148,35 @@ def _or_nan(value: float | None) -> float:
 
 
 def render_alpha_sweep_plot(
-    result: AlphaSweepResult, bounds: SeparabilityBounds, out_path: str | PathLike
+    result: AlphaSweepResult,
+    bounds: SeparabilityBounds,
+    out_path: str | PathLike,
+    criterion: str | None = None,
 ) -> None:
-    """Render one dataset's alpha sweep against the separability bounds.
+    """Render one dataset's alpha sweep for one criterion.
 
-    Content separability and the resolvable-bridge share are drawn over the
-    alpha grid; the shaded band marks the feasible separability range and a
-    dashed line marks the chosen alpha, when there is one. Values that could
-    not be computed leave gaps in the curves.
+    Content separability, the resolvable-bridge share, detectability and the
+    surface gap are drawn over the alpha grid; the shaded band marks the
+    feasible separability range and a dashed line marks the criterion's chosen
+    alpha, when there is one. Values that could not be computed leave gaps in
+    the curves.
 
-    :param result: sweep rows and the alpha chosen from them.
+    :param result: sweep rows and the per-criterion alpha choices.
     :param bounds: separability bounds that decided feasibility.
     :param out_path: destination image path; the figure is written as PNG at
         300 dpi and closed before returning.
+    :param criterion: criterion whose alpha star is marked; ``None`` marks no
+        line.
     """
     sns.set_theme(style="white", font_scale=1.0)
-    _fig, ax = plt.subplots(figsize=(5, 3.2))
+    _fig, ax = plt.subplots(figsize=(6, 3.6))
     alphas = [row["alpha"] for row in result.rows]
+    curves = [
+        ("content_separability", "#1f77b4", "o", "-", "content separability"),
+        ("margin_pi_resolvable", "#ff7f0e", "s", ":", "π resolvable"),
+        ("surface_auc_gap", "#2ca02c", "^", "--", "surface AUC gap"),
+        ("detect_auc_lr", "#d62728", "v", "-.", "detect AUC (LR)"),
+    ]
 
     ax.axhspan(
         bounds.min_separability,
@@ -173,36 +185,31 @@ def render_alpha_sweep_plot(
         alpha=0.12,
         label="feasible separability",
     )
-    ax.plot(
-        alphas,
-        [_or_nan(row.get("content_separability")) for row in result.rows],
-        color="#1f77b4",
-        marker="o",
-        linewidth=1.8,
-        label="content separability",
-    )
-    ax.plot(
-        alphas,
-        [_or_nan(row.get("margin_pi_resolvable")) for row in result.rows],
-        color="#ff7f0e",
-        marker="s",
-        linewidth=1.4,
-        linestyle=":",
-        label="π resolvable",
-    )
-    if result.choice.alpha is not None:
-        ax.axvline(
-            x=result.choice.alpha,
-            color="black",
-            linestyle="--",
-            linewidth=1.0,
-            label=f"α*={result.choice.alpha:.2f}",
+    for column, color, marker, linestyle, label in curves:
+        ax.plot(
+            alphas,
+            [_or_nan(row.get(column)) for row in result.rows],
+            color=color,
+            marker=marker,
+            linewidth=1.4,
+            linestyle=linestyle,
+            label=label,
         )
+    if criterion is not None:
+        choice = result.choices.get(criterion)
+        if choice is not None and choice.alpha is not None:
+            ax.axvline(
+                x=choice.alpha,
+                color="black",
+                linestyle="--",
+                linewidth=1.0,
+                label=f"α* ({criterion})={choice.alpha:.2f}",
+            )
 
-    ax.set_ylim(0, 1)
+    ax.set_ylim(-0.05, 1.05)
     ax.set_xlabel("α", fontsize=8)
     ax.tick_params(labelsize=7)
-    ax.legend(fontsize=7, frameon=True)
+    ax.legend(fontsize=7, frameon=True, loc="center left", bbox_to_anchor=(1.01, 0.5))
     sns.despine(ax=ax)
     plt.tight_layout()
     plt.savefig(out_path, dpi=300)

@@ -1,7 +1,7 @@
-from typing import Annotated, ClassVar, Self
+from typing import Annotated, ClassVar, Literal, Self
 
 from matchescu.matching.config import AnyDatasetConfig, ConfigModel
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 
 from .pairing import PairingScope, PairingSettings, PairingStrategyName
 from .profiling import ProfileOptions, SplitRatio
@@ -46,50 +46,98 @@ class ProfilingConfig(ConfigModel):
 class SelectionConfig(ConfigModel):
     """How ``analyse`` chooses an alpha, overridable per dataset.
 
+    `criterion` accepts one name or a list of names; every criterion is
+    applied to the same profiled sweep, so each gets its own alpha star.
     Values are validated by building the selection settings once, so a bad
     configuration fails while it loads.
+
+    :ivar criterion: one or more keys of ``ALPHA_CRITERIA``.
     """
 
-    criterion: str = SelectionSettings.DEFAULT_CRITERION
+    criterion: str | list[str] = SelectionSettings.DEFAULT_CRITERION
     min_separability: float = SeparabilityBounds.DEFAULT_MIN_SEPARABILITY
     max_auc: float = SeparabilityBounds.DEFAULT_MAX_AUC
     target_resolvable: float = SelectionSettings.DEFAULT_TARGET_RESOLVABLE
     max_detect_auc: float = SelectionSettings.DEFAULT_MAX_DETECT_AUC
+
+    @field_validator("criterion", mode="before")
+    @classmethod
+    def _wrap_single_criterion(cls, value: object) -> object:
+        return [value] if isinstance(value, str) else value
 
     @model_validator(mode="after")
     def _check(self) -> Self:
         self.to_selection_settings()
         return self
 
-    def to_selection_settings(self) -> SelectionSettings:
-        """Return the selection settings these values describe."""
-        return SelectionSettings(
-            SeparabilityBounds(self.min_separability, self.max_auc),
-            self.criterion,
-            self.target_resolvable,
-            self.max_detect_auc,
+    def criteria(self) -> list[str]:
+        """Return the configured criterion names, validated and deduplicated."""
+        configured = (
+            [self.criterion] if isinstance(self.criterion, str) else self.criterion
         )
+        return list(dict.fromkeys(configured))
+
+    def to_selection_settings(self) -> list[SelectionSettings]:
+        """Return one selection settings per configured criterion."""
+        bounds = SeparabilityBounds(self.min_separability, self.max_auc)
+        return [
+            SelectionSettings(
+                bounds, criterion, self.target_resolvable, self.max_detect_auc
+            )
+            for criterion in self.criteria()
+        ]
 
 
 class ThresholdAnalysisConfig(ConfigModel):
     """The minimum-ambiguity sweep and mixture fit of ``analyse``.
 
-    :ivar start_value: first threshold of the sweep.
-    :ivar step_count: number of thresholds in the sweep, at least 1.
-    :ivar step_size: distance between consecutive thresholds, at least 0.1.
+    When the sweep range is not given (``None`` fields), it is derived from
+    the fitted theta as ``theta - 5 .. theta + 5`` with step 1.0, i.e. eleven
+    thresholds; callers then need the fitted theta first. Explicit values
+    replace the derived range, keeping the historical behaviour.
+
+    :ivar start_value: first threshold of the sweep; ``None`` derives it.
+    :ivar step_count: number of thresholds in the sweep, at least 1; ``None``
+        derives it.
+    :ivar step_size: distance between consecutive thresholds, at least 0.1;
+        ``None`` derives it.
     :ivar gmm_restarts: random restarts of the mixture fit, at least 1.
     """
 
     MIN_STEP_SIZE: ClassVar[float] = 0.1
+    AUTO_SWEEP_RADIUS: ClassVar[float] = 5.0
+    AUTO_SWEEP_STEP_SIZE: ClassVar[float] = 1.0
+    AUTO_SWEEP_STEP_COUNT: ClassVar[int] = 11
     DEFAULT_START_VALUE: ClassVar[float] = 0.0
     DEFAULT_STEP_COUNT: ClassVar[int] = 10
     DEFAULT_STEP_SIZE: ClassVar[float] = 1.0
     DEFAULT_GMM_RESTARTS: ClassVar[int] = 50
 
-    start_value: float = DEFAULT_START_VALUE
-    step_count: int = Field(default=DEFAULT_STEP_COUNT, ge=1)
-    step_size: float = Field(default=DEFAULT_STEP_SIZE, ge=MIN_STEP_SIZE)
+    start_value: float | None = None
+    step_count: int | None = Field(default=None, ge=1)
+    step_size: float | None = Field(default=None, ge=MIN_STEP_SIZE)
     gmm_restarts: int = Field(default=DEFAULT_GMM_RESTARTS, ge=1)
+
+    def sweep_range(self, theta: float) -> tuple[float, int, float]:
+        """Resolve the sweep range, deriving it from `theta` when unset.
+
+        :param theta: threshold of the mixture fit on the pairing scores.
+        :returns: ``(start_value, step_count, step_size)`` actually used.
+        """
+        start = (
+            self.start_value
+            if self.start_value is not None
+            else theta - self.AUTO_SWEEP_RADIUS
+        )
+        count = (
+            self.step_count
+            if self.step_count is not None
+            else self.AUTO_SWEEP_STEP_COUNT
+        )
+        size = (
+            self.step_size if self.step_size is not None else self.AUTO_SWEEP_STEP_SIZE
+        )
+        return start, count, size
 
 
 class AnalysisConfig(ConfigModel):
@@ -114,7 +162,8 @@ class AmbiguityDataConfig(ConfigModel):
     :ivar secondary_features: properties copied from the home
         representative to every bridge.
     :ivar min_ambiguity: minimum pairing score of a bridge; ``None``
-        disables the filter.
+        disables the filter, the literal ``"auto"`` lets ``analyse`` set it
+        to the fitted theta.
     :ivar alphas: blend weights, each in (0, 1). ``analyse`` searches them;
         ``generate`` writes one variant per weight.
     :ivar target_floor: minimum target similarity, as a fraction of the
@@ -127,10 +176,12 @@ class AmbiguityDataConfig(ConfigModel):
         the top-level block.
     """
 
+    AUTO_MIN_AMBIGUITY: ClassVar[Literal["auto"]] = "auto"
+
     dataset: AnyDatasetConfig
     ambiguity_targets: list[str] | None = None
     secondary_features: list[str] | None = None
-    min_ambiguity: float | None = None
+    min_ambiguity: float | Literal["auto"] | None = None
     alphas: list[Alpha] = Field(min_length=1)
     target_floor: float = Field(default=0.0, ge=0, le=1)
     target_links: int = Field(default=1, ge=1)

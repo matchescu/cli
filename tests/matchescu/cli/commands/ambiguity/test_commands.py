@@ -163,6 +163,46 @@ def test_analyse_reports_configured_alpha_criterion(analyse_rows):
     assert row["alpha_criterion"] == "gmm-balance"
 
 
+def test_analyse_reports_every_configured_criterion(analyse_rows):
+    (row,) = analyse_rows(
+        "ambiguity_methodology.csv",
+        analysis={"selection": {"criterion": ["smallest", "gmm-balance"]}},
+    )
+
+    assert row["alpha_criterion"] == "smallest,gmm-balance"
+    assert "alpha_star_smallest" in row
+    assert "alpha_star_gmm-balance_reason" in row
+
+
+def test_analyse_writes_one_sweep_csv_with_selected_flag_per_criterion(
+    analyse_rows,
+):
+    rows = analyse_rows(
+        "ambiguity_alpha_sweep.csv",
+        analysis={"selection": {"criterion": ["smallest", "gmm-balance"]}},
+    )
+
+    assert [float(row["alpha"]) for row in rows] == [0.5, 0.8]
+    assert "selected_smallest" in rows[0]
+    assert "selected_gmm-balance" in rows[0]
+
+
+def test_analyse_writes_one_alpha_sweep_plot_per_criterion(
+    write_config, invoke, tmp_path
+):
+    report_dir = tmp_path / "report"
+    config = write_config(
+        (0.5, 0.8),
+        analysis={"selection": {"criterion": ["smallest", "gmm-balance"]}},
+    )
+
+    result = invoke("analyse", "-c", str(config), "--plot-dir", str(report_dir))
+
+    assert result.exit_code == 0
+    assert (report_dir / "alpha_sweep_tiny_smallest.png").exists()
+    assert (report_dir / "alpha_sweep_tiny_gmm-balance.png").exists()
+
+
 def test_analyse_sweeps_configured_threshold_count(analyse_rows):
     rows = analyse_rows(
         "ambiguity_threshold_sweep.csv", analysis={"threshold": {"stepCount": 3}}
@@ -171,10 +211,57 @@ def test_analyse_sweeps_configured_threshold_count(analyse_rows):
     assert len(rows) == 3
 
 
+def test_analyse_sweeps_theta_plus_minus_five_by_default(
+    invoke, tmp_path, write_config
+):
+    report_dir = tmp_path / "report"
+    config = write_config((0.5, 0.8))
+
+    result = invoke("analyse", "-c", str(config), "--plot-dir", str(report_dir))
+
+    assert result.exit_code == 0
+    with (report_dir / "ambiguity_threshold_sweep.csv").open(newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    thresholds = [float(row["threshold"]) for row in rows]
+    with (report_dir / "ambiguity_methodology.csv").open(newline="") as handle:
+        theta = float(next(csv.DictReader(handle))["theta"])
+
+    assert len(thresholds) == 11
+    assert thresholds[0] == pytest.approx(theta - 5.0, abs=0.01)
+    assert thresholds[-1] == pytest.approx(theta + 5.0, abs=0.01)
+
+
 def test_analyse_profiles_every_configured_alpha(analyse_rows):
     rows = analyse_rows("ambiguity_alpha_sweep.csv")
 
     assert [float(row["alpha"]) for row in rows] == [0.5, 0.8]
+
+
+def test_analyse_accepts_auto_min_ambiguity(write_config, invoke, tmp_path):
+    report_dir = tmp_path / "report"
+    config = write_config((0.5, 0.8))
+    payload = json.loads(config.read_text())
+    payload["inputData"][0]["minAmbiguity"] = "auto"
+    config.write_text(json.dumps(payload))
+
+    result = invoke("analyse", "-c", str(config), "--plot-dir", str(report_dir))
+
+    assert result.exit_code == 0
+    assert (report_dir / "ambiguity_alpha_sweep.csv").exists()
+
+
+def test_generate_rejects_auto_min_ambiguity(write_config, invoke, tmp_path):
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()
+    entry_config = write_config((0.65,))
+    payload = json.loads(entry_config.read_text())
+    payload["inputData"][0]["minAmbiguity"] = "auto"
+    entry_config.write_text(json.dumps(payload))
+
+    result = invoke("generate", "-c", str(entry_config), "-O", str(output_dir))
+
+    assert result.exit_code == USAGE_ERROR
+    assert "auto" in result.output
 
 
 def test_generate_succeeds_when_simple_pairs_selected(write_config, invoke, tmp_path):

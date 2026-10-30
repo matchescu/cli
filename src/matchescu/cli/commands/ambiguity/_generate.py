@@ -210,12 +210,17 @@ class AmbiguityGenerator:
             dataset; defaults to the greedy cluster-representative strategy.
         :returns: the generator configured for exactly this dataset.
         """
+        min_ambiguity = (
+            None
+            if input_cfg.min_ambiguity == AmbiguityDataConfig.AUTO_MIN_AMBIGUITY
+            else input_cfg.min_ambiguity
+        )
         return cls(
             data.id_table,
             data.compute_clusters(),
             input_cfg.ambiguity_targets,
             secondary_features=input_cfg.secondary_features,
-            min_ambiguity=input_cfg.min_ambiguity,
+            min_ambiguity=min_ambiguity,
             alphas=tuple(input_cfg.alphas),
             target_floor=input_cfg.target_floor,
             target_links=input_cfg.target_links,
@@ -803,6 +808,16 @@ def generate_ambiguous_datasets(
     """
     root_dir = get_options(ctx).root_dir
     config = load_ambiguity_config(config_file, root_dir)
+    auto_entries = [
+        entry.dataset.directory
+        for entry in config.input_data
+        if entry.min_ambiguity == AmbiguityDataConfig.AUTO_MIN_AMBIGUITY
+    ]
+    if auto_entries:
+        raise click.UsageError(
+            "minAmbiguity 'auto' is resolved from the fitted theta by analyse "
+            f"only; generate cannot use it for: {', '.join(auto_entries)}"
+        )
     output_dir = make_absolute_path(output_dir, root_dir)
     generation = DatasetGeneration(output_dir, config.profiling.to_profile_options())
 

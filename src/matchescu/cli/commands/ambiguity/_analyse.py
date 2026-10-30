@@ -1,4 +1,5 @@
 import warnings
+from collections.abc import Mapping, Sequence
 from os import PathLike
 from pathlib import Path
 from typing import Any
@@ -13,7 +14,7 @@ from polars import DataFrame
 from matchescu.cli.runtime import get_options
 
 from ._alpha_sweep import AlphaSweep, AlphaSweepResult
-from ._config import AmbiguityConfig, ThresholdAnalysisConfig
+from ._config import AmbiguityConfig, AmbiguityDataConfig, ThresholdAnalysisConfig
 from ._generate import AmbiguityGenerator
 from ._gmm_fit import GmmFit, InsufficientScoresError
 from ._plotting import (
@@ -82,9 +83,8 @@ def analyse_threshold(
     print(f"analysing {data.name}")
     scores = generator.best_pairing_scores()
     gmm_fit = GmmFit.from_scores(scores, n_init=threshold.gmm_restarts)
-    threshold_range = threshold.start_value + threshold.step_size * np.arange(
-        threshold.step_count
-    )
+    start_value, step_count, step_size = threshold.sweep_range(gmm_fit.threshold)
+    threshold_range = start_value + step_size * np.arange(step_count)
     *sweep, at_theta = generator.pairing_summaries(
         [*threshold_range.tolist(), gmm_fit.threshold]
     )
@@ -126,7 +126,12 @@ def _alpha_sweeps(config: AmbiguityConfig, options: ProfileOptions) -> list[Alph
     """
     return [
         AlphaSweep(
-            AlphaSelector(config.analysis_for(entry).selection.to_selection_settings()),
+            [
+                AlphaSelector(settings)
+                for settings in config.analysis_for(
+                    entry
+                ).selection.to_selection_settings()
+            ],
             options,
         )
         for entry in config.input_data
@@ -138,15 +143,16 @@ def build_methodology_rows(
     analysis_fits: list[GmmFit],
     analysis_at_theta: list[PairingSummary],
     analysis_sweeps: list[AlphaSweepResult],
-    analysis_selections: list[SelectionSettings],
+    analysis_selections: list[list[SelectionSettings]],
 ) -> list[dict[Any, Any]]:
     """Summarise every analysed dataset into methodology report rows.
 
     Each row condenses one dataset's fit into the numbers populating the
     ambiguity-injection table: bridges and one-way links available at the
     fitted threshold, normalised per cluster, the mixture component
-    statistics, the alpha chosen from the sweep with the parameters of that
-    choice, and the bridge components at the configured threshold. Display
+    statistics, the alphas chosen from the sweep by every configured
+    criterion with the parameters of that choice, and the bridge components
+    at the configured threshold. Display
     rounding (2 decimals) happens here so the CSV is directly usable, while
     raw precision remains available on the underlying `GmmFit` and in the
     alpha sweep CSV.
@@ -160,13 +166,13 @@ def build_methodology_rows(
         would produce at the fitted threshold, as returned by
         `analyse_threshold`.
     :param analysis_sweeps: per-dataset alpha sweeps supplying the chosen
-        alpha and the bridge component columns.
-    :param analysis_selections: per-dataset parameters of the alpha choice.
+        alphas and the bridge component columns.
+    :param analysis_selections: per-dataset parameters of the alpha choices.
     :returns: one dict per dataset, in collection order; an empty input yields
         an empty list.
     """
     rows: list[dict[Any, Any]] = []
-    for df, fit, at_theta, sweep, selection in zip(
+    for df, fit, at_theta, sweep, selections in zip(
         analysis_frames,
         analysis_fits,
         analysis_at_theta,
@@ -196,11 +202,25 @@ def build_methodology_rows(
                 "sigma_superficial": round(fit.sigma_superficial, DISPLAY_DECIMALS),
                 "pi_superficial": round(fit.pi_superficial, DISPLAY_DECIMALS),
                 "boundary_type": fit.boundary_type,
-                **selection.as_row(),
+                **_selection_row(selections),
                 **_rounded(sweep.summary()),
             }
         )
     return rows
+
+
+def _selection_row(selections: list[SelectionSettings]) -> dict[str, Any]:
+    """Flatten the per-criterion choice parameters into report columns.
+
+    Only the criterion names differ between selections; every other parameter
+    is shared, so it is reported once.
+    """
+    if not selections:
+        return {}
+    row = selections[0].as_row()
+    return row | {
+        "alpha_criterion": ",".join(settings.criterion for settings in selections)
+    }
 
 
 def _rounded(columns: dict[str, Any]) -> dict[str, Any]:
@@ -218,7 +238,7 @@ def _write_methodology_csv(rows: list[dict[Any, Any]], out_path: Path) -> None:
 def write_report(
     analysis_frames: list[DataFrame],
     methodology_rows: list[dict[Any, Any]],
-    alpha_sweep_rows: list[dict[str, Any]],
+    alpha_sweep_rows: Sequence[Mapping[str, Any]],
     plot_dir: str | PathLike,
 ) -> None:
     """Write the tabular part of the ambiguity analysis report.
@@ -286,15 +306,16 @@ def analyse_ambiguity(
     Every setting comes from the configuration file; see the package
     README. Two searches run per dataset. The threshold search fits the
     minimum ambiguity θ from the pairing scores, ignoring the configured
-    ``minAmbiguity``. The alpha search generates the dataset's ``alphas`` at
-    the configured ``minAmbiguity``, profiles every variant and chooses the
-    alpha whose content separability lies inside the bounds, by the chosen
-    criterion.
+    ``minAmbiguity`` unless it is ``"auto"``, in which case the alpha search
+    runs at θ. The alpha search generates the dataset's ``alphas``, profiles
+    every variant and chooses one alpha per configured criterion among those
+    whose content separability lies inside the bounds.
     """
     root_dir = get_options(ctx).root_dir
     config = load_ambiguity_config(config_file, root_dir)
+    options = config.profiling.to_profile_options()
     try:
-        alpha_sweeps = _alpha_sweeps(config, config.profiling.to_profile_options())
+        alpha_sweeps = _alpha_sweeps(config, options)
     except ValueError as err:
         raise click.UsageError(str(err)) from err
 
@@ -303,7 +324,7 @@ def analyse_ambiguity(
     analysis_scores: list[list[float]] = []
     analysis_at_theta: list[PairingSummary] = []
     analysis_sweeps: list[AlphaSweepResult] = []
-    analysis_selections: list[SelectionSettings] = []
+    analysis_selections: list[list[SelectionSettings]] = []
     for input_cfg, alpha_sweep in zip(config.input_data, alpha_sweeps):
         print("processing", input_cfg.dataset.directory)
         data = load_benchmark_data(input_cfg, root_dir)
@@ -322,7 +343,14 @@ def analyse_ambiguity(
         analysis_fits.append(gmm_fit)
         analysis_scores.append(scores)
         analysis_at_theta.append(at_theta)
-        analysis_selections.append(analysis.selection.to_selection_settings())
+        selections = analysis.selection.to_selection_settings()
+        analysis_selections.append(selections)
+        if input_cfg.min_ambiguity == AmbiguityDataConfig.AUTO_MIN_AMBIGUITY:
+            generator = AmbiguityGenerator.from_config(
+                input_cfg.model_copy(update={"min_ambiguity": gmm_fit.threshold}),
+                data,
+                config.pairing_settings(),
+            )
         analysis_sweeps.append(
             alpha_sweep.run(generator, data.id_table, sweep_df["dataset"][0])
         )
@@ -333,7 +361,7 @@ def analyse_ambiguity(
 
     plot_path = Path(plot_dir)
     plot_path.mkdir(parents=True, exist_ok=True)
-    for df, fit, scores, selection, sweep in zip(
+    for df, fit, scores, selections, sweep in zip(
         analysis_frames,
         analysis_fits,
         analysis_scores,
@@ -342,9 +370,13 @@ def analyse_ambiguity(
     ):
         name = df["dataset"][0]
         render_gmm_fit_plot(scores, fit, plot_path / f"gmm_fit_{name}.png")
-        render_alpha_sweep_plot(
-            sweep, selection.bounds, plot_path / f"alpha_sweep_{name}.png"
-        )
+        for selection in selections:
+            render_alpha_sweep_plot(
+                sweep,
+                selection.bounds,
+                plot_path / f"alpha_sweep_{name}_{selection.criterion}.png",
+                selection.criterion,
+            )
 
     methodology_rows = build_methodology_rows(
         analysis_frames,
