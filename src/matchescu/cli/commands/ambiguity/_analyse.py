@@ -329,7 +329,7 @@ def analyse_ambiguity(
         print("processing", input_cfg.dataset.directory)
         data = load_benchmark_data(input_cfg, root_dir)
         generator = AmbiguityGenerator.from_config(
-            input_cfg, data, config.pairing_settings()
+            input_cfg, data, config.pairing_settings_for(input_cfg)
         )
         analysis = config.analysis_for(input_cfg)
         try:
@@ -349,7 +349,7 @@ def analyse_ambiguity(
             generator = AmbiguityGenerator.from_config(
                 input_cfg.model_copy(update={"min_ambiguity": gmm_fit.threshold}),
                 data,
-                config.pairing_settings(),
+                config.pairing_settings_for(input_cfg),
             )
         analysis_sweeps.append(
             alpha_sweep.run(generator, data.id_table, sweep_df["dataset"][0])

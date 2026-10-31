@@ -126,7 +126,8 @@ in a single train/valid/test split, or the split leaks clusters.
 
 The file has a top-level `profiling` block, a top-level `analysis` block,
 top-level pairing keys and an `inputData` list with one entry per dataset. Only
-`inputData` is required.
+`inputData` is required. Each `inputData` entry may also carry a `pairing`
+block overriding the top-level pairing keys for that dataset.
 
 ```json
 {
@@ -215,6 +216,12 @@ top-level pairing keys and an `inputData` list with one entry per dataset. Only
 | `pairingScope`        | `any`                 | `simple-pairs` | `any` keeps a pair when it is a top partner of either record. `mutual` keeps it only when it is a top partner of both.                                                                         |
 | `pairingMaxBlockSize` | `100`                 | `simple-pairs` | Largest token block kept. Tokens shared by more records are ignored. At least 2.                                                                                                               |
 
+The four top-level keys are the defaults for every dataset. An `inputData[]`
+entry may carry a `pairing` block with any of the same keys; each key set
+there overrides the top-level value for that dataset only, field by field.
+Keys left unset keep the top-level value, so an entry can change just
+`"pairingScope": "mutual"` and inherit the rest.
+
 ### Per dataset (`inputData[]`)
 
 | Key                 | Default  | Read by | Meaning                                                                                                                                                                                     |
@@ -227,6 +234,7 @@ top-level pairing keys and an `inputData` list with one entry per dataset. Only
 | `targetFloor`       | `0.0`    | both    | In [0, 1]. See [Concepts](#concepts).                                                                                                                                                       |
 | `targetLinks`       | `1`      | both    | One-way pairs per bridge, at least 1. Also sets how many target members the pairing score covers. Values above 1 add `_kN` to output names. Ignored by `simple-pairs`, which always uses 1. |
 | `maxLengthRatio`    | none     | both    | Highest bridge-value length, in tokens, as a multiple of the mean length of the two blended values. At least 1. Omit it to disable the limit.                                               |
+| `pairing`           | none     | both    | Per-dataset override of the top-level pairing keys. Each key set here wins for this dataset; keys left unset fall back to the top-level values.                                                 |
 | `analysis`          | none     | analyse | Replaces the whole top-level `analysis` block for this dataset. Omitted sub-blocks take their defaults, not the top-level values.                                                           |
 
 ### Profiling (`profiling`, all datasets)

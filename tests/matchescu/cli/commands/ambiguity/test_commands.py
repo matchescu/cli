@@ -294,3 +294,41 @@ def test_generate_records_pairing_strategy_in_metadata(write_config, invoke, tmp
     with (output_dir / "metadata.csv").open(newline="") as handle:
         rows = list(csv.DictReader(handle))
     assert {row["pairing_strategy"] for row in rows} == {"simple-pairs"}
+
+
+def test_generate_uses_per_dataset_pairing_override(write_config, invoke, tmp_path):
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()
+    config = write_config((0.65,), pairingStrategy="greedy-cluster-reps")
+    payload = json.loads(config.read_text())
+    payload["inputData"][0]["pairing"] = {
+        "pairingStrategy": "simple-pairs",
+        "pairingScope": "mutual",
+    }
+    config.write_text(json.dumps(payload))
+
+    result = invoke("generate", "-c", str(config), "-O", str(output_dir))
+
+    assert result.exit_code == 0
+    with (output_dir / "metadata.csv").open(newline="") as handle:
+        (row,) = list(csv.DictReader(handle))
+    assert row["pairing_strategy"] == "simple-pairs"
+    assert row["pairing_scope"] == "mutual"
+    # unset fields fall back to the top-level pairing keys, here the defaults
+    assert row["pairing_neighbours"] == "1"
+
+
+def test_analyse_accepts_per_dataset_pairing_override(write_config, invoke, tmp_path):
+    report_dir = tmp_path / "report"
+    config = write_config((0.5, 0.8))
+    payload = json.loads(config.read_text())
+    payload["inputData"][0]["pairing"] = {
+        "pairingStrategy": "simple-pairs",
+        "pairingNeighbours": 2,
+    }
+    config.write_text(json.dumps(payload))
+
+    result = invoke("analyse", "-c", str(config), "--plot-dir", str(report_dir))
+
+    assert result.exit_code == 0
+    assert (report_dir / "ambiguity_methodology.csv").exists()

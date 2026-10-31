@@ -10,6 +10,26 @@ from .selection import SelectionSettings, SeparabilityBounds
 type Alpha = Annotated[float, Field(gt=0, lt=1)]
 
 
+class PairingConfig(ConfigModel):
+    """Per-dataset override of the pairing strategy and its parameters.
+
+    Every field is optional; fields left unset fall back to the top-level
+    pairing keys of ``AmbiguityConfig``, resolved field by field. Values are
+    validated by building a probe ``PairingSettings``, so a bad override
+    fails while the configuration loads.
+
+    :ivar pairing_strategy: pairing strategy override.
+    :ivar pairing_neighbours: ``simple-pairs`` partners kept per record.
+    :ivar pairing_scope: ``simple-pairs`` top-partner scope.
+    :ivar pairing_max_block_size: ``simple-pairs`` largest token block kept.
+    """
+
+    pairing_strategy: PairingStrategyName | None = None
+    pairing_neighbours: int | None = Field(default=None, ge=1)
+    pairing_scope: PairingScope | None = None
+    pairing_max_block_size: int | None = Field(default=None, ge=2)
+
+
 class ProfilingConfig(ConfigModel):
     """Settings of every dataset profile, shared by all datasets.
 
@@ -172,6 +192,9 @@ class AmbiguityDataConfig(ConfigModel):
     :ivar max_length_ratio: highest bridge-value length, in tokens, as a
         multiple of the mean length of the two blended values; ``None``
         disables the limit.
+    :ivar pairing: pairing overrides of this dataset; fields left unset fall
+        back to the top-level pairing keys, field by field; ``None`` takes
+        the top-level pairing verbatim.
     :ivar analysis: analysis settings of this dataset; ``None`` falls back to
         the top-level block.
     """
@@ -186,6 +209,7 @@ class AmbiguityDataConfig(ConfigModel):
     target_floor: float = Field(default=0.0, ge=0, le=1)
     target_links: int = Field(default=1, ge=1)
     max_length_ratio: float | None = Field(default=None, ge=1)
+    pairing: PairingConfig | None = None
     analysis: AnalysisConfig | None = None
 
 
@@ -221,6 +245,34 @@ class AmbiguityConfig(ConfigModel):
             neighbours=self.pairing_neighbours,
             scope=self.pairing_scope,
             max_block_size=self.pairing_max_block_size,
+        )
+
+    def pairing_settings_for(self, entry: AmbiguityDataConfig) -> PairingSettings:
+        """Return the pairing settings of one dataset.
+
+        The top-level pairing keys are the baseline; every field set in the
+        entry's own `pairing` block overrides the baseline field by field.
+
+        :param entry: input dataset whose pairing settings are resolved.
+        :returns: the effective pairing settings of `entry`.
+        """
+        base = self.pairing_settings()
+        override = entry.pairing
+        if override is None:
+            return base
+        return PairingSettings(
+            name=override.pairing_strategy or base.name,
+            neighbours=(
+                override.pairing_neighbours
+                if override.pairing_neighbours is not None
+                else base.neighbours
+            ),
+            scope=override.pairing_scope or base.scope,
+            max_block_size=(
+                override.pairing_max_block_size
+                if override.pairing_max_block_size is not None
+                else base.max_block_size
+            ),
         )
 
     def analysis_for(self, entry: AmbiguityDataConfig) -> AnalysisConfig:

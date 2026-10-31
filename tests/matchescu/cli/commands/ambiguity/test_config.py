@@ -375,3 +375,86 @@ def test_pairing_neighbours_below_one_raises():
 def test_pairing_max_block_size_below_two_raises():
     with pytest.raises(ValidationError):
         AmbiguityConfig.model_validate({"pairingMaxBlockSize": 1, "inputData": []})
+
+
+def test_pairing_for_falls_back_to_top_level_when_entry_has_no_block(make_entry):
+    sut = AmbiguityConfig.model_validate(
+        {
+            "pairingStrategy": "simple-pairs",
+            "pairingNeighbours": 4,
+            "pairingScope": "mutual",
+            "pairingMaxBlockSize": 50,
+            "inputData": [{"dataset": DATASET, "alphas": [0.65]}],
+        }
+    )
+
+    assert sut.pairing_settings_for(sut.input_data[0]) == PairingSettings(
+        name=PairingStrategyName.SIMPLE_PAIRS,
+        neighbours=4,
+        scope=PairingScope.MUTUAL,
+        max_block_size=50,
+    )
+
+
+def test_pairing_for_returns_dataset_block_when_present(make_entry):
+    sut = AmbiguityConfig.model_validate(
+        {
+            "inputData": [
+                {
+                    "dataset": DATASET,
+                    "alphas": [0.65],
+                    "pairing": {
+                        "pairingStrategy": "simple-pairs",
+                        "pairingNeighbours": 2,
+                        "pairingScope": "mutual",
+                        "pairingMaxBlockSize": 100,
+                    },
+                }
+            ]
+        }
+    )
+
+    assert sut.pairing_settings_for(sut.input_data[0]) == PairingSettings(
+        name=PairingStrategyName.SIMPLE_PAIRS,
+        neighbours=2,
+        scope=PairingScope.MUTUAL,
+        max_block_size=100,
+    )
+
+
+def test_pairing_for_merges_partial_block_field_by_field_over_top_level(make_entry):
+    sut = AmbiguityConfig.model_validate(
+        {
+            "pairingStrategy": "simple-pairs",
+            "pairingNeighbours": 4,
+            "pairingMaxBlockSize": 50,
+            "inputData": [
+                {
+                    "dataset": DATASET,
+                    "alphas": [0.65],
+                    "pairing": {"pairingScope": "mutual", "pairingNeighbours": 2},
+                }
+            ],
+        }
+    )
+
+    assert sut.pairing_settings_for(sut.input_data[0]) == PairingSettings(
+        name=PairingStrategyName.SIMPLE_PAIRS,
+        neighbours=2,
+        scope=PairingScope.MUTUAL,
+        max_block_size=50,
+    )
+
+
+@pytest.mark.parametrize(
+    "pairing",
+    [
+        pytest.param({"pairingStrategy": "foo"}, id="unknown-strategy"),
+        pytest.param({"pairingNeighbours": 0}, id="zero-neighbours"),
+        pytest.param({"pairingScope": "foo"}, id="unknown-scope"),
+        pytest.param({"pairingMaxBlockSize": 1}, id="block-size-below-two"),
+    ],
+)
+def test_invalid_dataset_pairing_raises(make_entry, pairing):
+    with pytest.raises(ValidationError):
+        make_entry(pairing=pairing)

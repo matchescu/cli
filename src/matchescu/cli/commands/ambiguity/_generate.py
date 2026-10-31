@@ -825,6 +825,8 @@ def generate_ambiguous_datasets(
         print("processing", input_cfg.dataset.directory)
         data = load_benchmark_data(input_cfg, root_dir)
         generation.run(
-            AmbiguityGenerator.from_config(input_cfg, data, config.pairing_settings()),
+            AmbiguityGenerator.from_config(
+                input_cfg, data, config.pairing_settings_for(input_cfg)
+            ),
             data.id_table,
         )
