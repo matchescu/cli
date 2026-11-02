@@ -1,7 +1,7 @@
 import os
+from collections.abc import Callable
 from functools import partial
 from pathlib import Path
-from typing import cast
 
 import click
 import polars as pl
@@ -34,19 +34,15 @@ from matchescu.cli.runtime import get_options, make_absolute_path
 from ._eval_opts import EvalOptions
 from ._input_order import InputOrder, validate_input_order_option
 
-CLUSTERING_ALGOS: dict[str, ClusteringAlgorithm[RefId]] = {
-    "WCC": WeaklyConnectedComponents,
-    "MCL": MarkovClustering,
-    "PC": ParentCenterClustering,
-    "LEI": LeidenPartitioning,
-    "SC": cast(
-        ClusteringAlgorithm,
-        cast(
-            object,
-            partial(SpectralClustering, detect_wcc=True, max_power_iterations=100000),
-        ),
-    ),
+CLUSTERING_ALGOS: dict[str, Callable[..., ClusteringAlgorithm[RefId]]] = {
+    "WCC": partial(WeaklyConnectedComponents, threshold=0.0),
+    "MCL": partial(MarkovClustering, threshold=0.0),
+    "PC": partial(ParentCenterClustering, threshold=0.0),
+    "LEI": partial(LeidenPartitioning, threshold=0.0),
+    "SC": partial(SpectralClustering, detect_wcc=True, max_power_iterations=100000),
 }
+SEEDED_CLUSTERERS = frozenset({"LEI", "SC"})
+SUPPORTED_CLUSTERERS = frozenset(CLUSTERING_ALGOS) | SEEDED_CLUSTERERS
 CLUSTER_METRICS = [
     ("pp", pair_precision),
     ("pr", pair_recall),
@@ -57,6 +53,19 @@ CLUSTER_METRICS = [
     ("ari", adjusted_rand_index),
     ("twi", twi),
 ]
+
+
+def _new_clusterer(
+    algo_key: str, refs: list[RefId], seed: int
+) -> ClusteringAlgorithm[RefId]:
+    extra_args = {}
+    match algo_key:
+        case "LEI":
+            extra_args["seed"] = seed
+        case "SC":
+            extra_args["k_means_random_state"] = seed
+    clustering_factory = CLUSTERING_ALGOS[algo_key]
+    return clustering_factory(refs, **extra_args)
 
 
 def _load_reference_graphs(
@@ -82,7 +91,7 @@ def _load_dataset_matcher_data(
 ) -> dict[
     str,
     tuple[
-        set[RefId],
+        list[RefId],
         frozenset[frozenset[RefId]],
         dict[str, list[tuple[str, ReferenceGraph]]],
     ],
@@ -92,8 +101,10 @@ def _load_dataset_matcher_data(
         ds_dir = root_dir / ds_config.dataset.directory
         builder = new_benchmark_data_factory(ds_config.dataset, root_dir)
         benchmark_data = builder.load_data().create()
-        cs = load_comparison_space(benchmark_data, ds_dir, ds_config.comparison_space)
-        all_ref_ids = {x for cmp in cs for x in cmp}
+        cs = load_comparison_space(
+            benchmark_data, ds_dir, ds_config.comparison_space, seed=cfg.seed
+        )
+        all_ref_ids = list(dict.fromkeys(x for cmp in cs for x in cmp))
         cs_path = ds_dir / ds_config.comparison_space.file_name
 
         clusters_path = ds_dir / (
@@ -183,17 +194,16 @@ def evaluate_clustering(
         task = progress.add_task("compute cluster metrics", total=total_steps)
 
         for algo_key in cfg.clustering.algorithms:
-            if algo_key not in CLUSTERING_ALGOS:
+            if algo_key not in SUPPORTED_CLUSTERERS:
                 progress.update(task, advance=n_datasets * n_matchers * n_metrics)
                 continue
 
-            algo_factory = CLUSTERING_ALGOS[algo_key]
             for ds_name, (
                 all_ref_ids,
                 true_clusters,
                 reference_graphs,
             ) in dataset_matcher_data.items():
-                clustering_algo = algo_factory(all_ref_ids, threshold=0.0)
+                clustering_algo = _new_clusterer(algo_key, all_ref_ids, cfg.seed)
                 for matcher_name, graphs in reference_graphs.items():
                     for order, graph in graphs:
                         stats.append(

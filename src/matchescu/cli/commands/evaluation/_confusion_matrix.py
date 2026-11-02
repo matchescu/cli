@@ -33,7 +33,12 @@ def _prepare_labels(
         ds_dir = root_dir / ds_config.dataset.directory
         builder = new_benchmark_data_factory(ds_config.dataset, root_dir)
         benchmark_data = builder.load_data().create()
-        cs = load_comparison_space(benchmark_data, ds_dir, ds_config.comparison_space)
+        cs = load_comparison_space(
+            benchmark_data,
+            ds_dir,
+            ds_config.comparison_space,
+            seed=cfg.seed,
+        )
         y_true = [benchmark_data.true_matches.get(cmp, 0) for cmp in cs]
 
         predictions = {}

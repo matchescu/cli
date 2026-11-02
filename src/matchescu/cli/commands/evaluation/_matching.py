@@ -151,7 +151,10 @@ def evaluate_matching(
             benchmark_data = builder.load_data().create()
             ds_dir = root_dir / ds_config.dataset.directory
             cs = load_comparison_space(
-                benchmark_data, ds_dir, ds_config.comparison_space
+                benchmark_data,
+                ds_dir,
+                ds_config.comparison_space,
+                seed=cfg.seed,
             )
             cs_pair_gt = {cmp: benchmark_data.true_matches.get(cmp, 0) for cmp in cs}
             cs_refs = list(map(benchmark_data.id_table.get_all, cs))

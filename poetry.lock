@@ -1792,14 +1792,14 @@ networkx = ">=3.6.1,<4.0.0"
 
 [[package]]
 name = "matchescu-clustering"
-version = "0.15.10"
+version = "0.15.11"
 description = "Clustering routines and data structures for entity resolution"
 optional = false
 python-versions = "<3.14,>=3.13"
 groups = ["main"]
 files = [
-    {file = "matchescu_clustering-0.15.10-py3-none-any.whl", hash = "sha256:df046652142d332174a1539bcf262a986d45355a8a3249f20de90e8a7254cde3"},
-    {file = "matchescu_clustering-0.15.10.tar.gz", hash = "sha256:6e394c1caae173352f567b7fb84a0ee1daa51ed133d4506a0dac6b08559e2735"},
+    {file = "matchescu_clustering-0.15.11-py3-none-any.whl", hash = "sha256:c836dec2b860deee6a42ea49bb00402bafeb4a037a1129495ec8ee5819337ecd"},
+    {file = "matchescu_clustering-0.15.11.tar.gz", hash = "sha256:54655912efc0088e99c6b2904f1aaa73d39f904773b1cda9538623e4b356f755"},
 ]
 
 [package.dependencies]
@@ -1833,14 +1833,14 @@ stopwords = ">=1.0.2,<2.0.0"
 
 [[package]]
 name = "matchescu-matching"
-version = "0.25.4"
+version = "0.25.5"
 description = "Common types and algorithms used for matching two information"
 optional = false
 python-versions = "<3.14,>=3.13"
 groups = ["main"]
 files = [
-    {file = "matchescu_matching-0.25.4-py3-none-any.whl", hash = "sha256:dfa53784f77840f9949d40e27bc85928b9c7d99352203c1ec145d8cfac65a431"},
-    {file = "matchescu_matching-0.25.4.tar.gz", hash = "sha256:c00aca5f5bd15a4454e9c4b29694581bae877d470888660363f59d0503680ed4"},
+    {file = "matchescu_matching-0.25.5-py3-none-any.whl", hash = "sha256:52a51deb84380c4025a42ced954736a7a2ec66a1efcb1918db562b24d2876b61"},
+    {file = "matchescu_matching-0.25.5.tar.gz", hash = "sha256:a1c1e13a9064a61908cfdf7f94e51ccb62f7cc64bf19a98a336e827b0385387a"},
 ]
 
 [package.dependencies]
@@ -4634,4 +4634,4 @@ type = ["pytest-mypy (>=1.0.1) ; platform_python_implementation != \"PyPy\""]
 [metadata]
 lock-version = "2.1"
 python-versions = "!=3.14.1,~3.13"
-content-hash = "7fe8c9ac26d2b150f5afcf675421090b261a9a51a0854544477b1098892823b3"
+content-hash = "b8b77862582060b94e9ed3fd412f4822402868344e27fd33c26412ae2b374d0a"

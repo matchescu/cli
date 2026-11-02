@@ -25,7 +25,10 @@ def _get_excluded(
 
 
 def load_comparison_space(
-    data: BenchmarkData, data_dir: Path, cs_config: ComparisonSpaceConfig
+    data: BenchmarkData,
+    data_dir: Path,
+    cs_config: ComparisonSpaceConfig,
+    seed: int = 42,
 ) -> BinaryComparisonSpace:
     """Load a comparison space from a CSV file or generate one.
 
@@ -44,6 +47,7 @@ def load_comparison_space(
         the comparison space
     :param cs_config: configuration parameters for comparison space generation
         and persistence.
+    :param seed: seed for comparison space generation. Defaults to ``42``.
     """
     file_path = data_dir / cs_config.file_name
     if file_path.exists():
@@ -57,6 +61,7 @@ def load_comparison_space(
             neg_pos_ratio=cs_config.neg_pos_ratio,
             match_bridge_ratio=cs_config.match_bridge_ratio,
             max_total_samples=cs_config.sample_count,
+            seed=seed,
             save=True,
             excluded=_get_excluded(data, data_dir, cs_config),
         )

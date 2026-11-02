@@ -80,3 +80,4 @@ class EvaluationConfig(ConfigModel):
     benchmark_data: list[EvaluationBenchmarkConfig]
     matching: list[AnyMatcherConfig] | None = None
     clustering: ClusteringConfig | None = None
+    seed: int = 42

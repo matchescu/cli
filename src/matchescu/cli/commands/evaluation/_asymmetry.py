@@ -62,7 +62,10 @@ class AsymmetryCommand(click.Command):
             benchmark_data = builder.load_data().create()
             ds_dir = root_dir / ds_config.dataset.directory
             cs = load_comparison_space(
-                benchmark_data, ds_dir, ds_config.comparison_space
+                benchmark_data,
+                ds_dir,
+                ds_config.comparison_space,
+                seed=cfg.seed,
             )
             self._prog.update(
                 self._overall_prog, description=f"{ds_config.dataset.directory} loaded"

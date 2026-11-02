@@ -1,4 +1,5 @@
 import os
+from collections.abc import Iterable
 from logging import getLogger
 from os import PathLike
 from pathlib import Path
@@ -16,7 +17,7 @@ def load_comparison_space_clusters(
     path: str | PathLike,
     data: BenchmarkData,
     cs: BinaryComparisonSpace,
-    all_ref_ids: set[RefId],
+    all_ref_ids: Iterable[RefId],
 ) -> frozenset[frozenset[RefId]]:
     """Load the clusters saved by ``GroundTruthComparisonSpaceGenerator``.
 
@@ -25,8 +26,9 @@ def load_comparison_space_clusters(
         provided by this parameter
     :param cs: if path doesn't exist, generate clusters for the comparisons
         specified by this parameter
-    :param all_ref_ids: a set of all reference identifiers, including those that
-        aren't part of clusters and should be treated as singletons
+    :param all_ref_ids: all reference identifiers, including those that aren't
+        part of clusters and should be treated as singletons. Order is preserved
+        for singleton assignment.
     """
     path = Path(path)
     max_id = 0
@@ -50,7 +52,9 @@ def load_comparison_space_clusters(
             max_id = max(cluster_id, max_id)
             clusters.setdefault(cluster_id, set()).add(ref_id)
             clustered_refs.add(ref_id)
-    singletons = all_ref_ids - clustered_refs
+    singletons = [
+        ref_id for ref_id in dict.fromkeys(all_ref_ids) if ref_id not in clustered_refs
+    ]
     for ref_id in singletons:
         clusters.setdefault(max_id + 1, set()).add(ref_id)
         max_id += 1
