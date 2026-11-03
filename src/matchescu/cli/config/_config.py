@@ -44,6 +44,7 @@ class ComparisonSpaceConfig(ConfigModel):
     sample_count: int | None = None
     neg_pos_ratio: float = 4.0
     match_bridge_ratio: float = 2.0
+    bridge_source: str | None = None
 
     has_header: bool = True
     left_id_col: str | int = (0,)

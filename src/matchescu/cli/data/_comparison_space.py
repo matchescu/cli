@@ -1,4 +1,5 @@
 from collections.abc import Iterable
+from functools import cache, partial
 from pathlib import Path
 
 from matchescu.comparison_space.persistence import CsvPersistence
@@ -22,6 +23,29 @@ def _get_excluded(
         if not path.exists() or not path.is_file():
             continue
         yield from CsvPersistence(path).read(cs_config.to_csv_params(data.name))
+
+
+@cache
+def _label_two_bridges(data: BenchmarkData) -> frozenset[RefId]:
+    return frozenset(
+        right for (_, right), label in data.true_matches.items() if label > 1
+    )
+
+
+def _is_bridge(data: BenchmarkData, bridge_source: str | None, ref_id: RefId) -> bool:
+    if bridge_source is not None:
+        return ref_id.source == bridge_source
+    return ref_id in _label_two_bridges(data)
+
+
+def _check_bridge_source(data: BenchmarkData, bridge_source: str | None) -> None:
+    if bridge_source is None:
+        return
+    if any(ref.id.source == bridge_source for ref in data.id_table):
+        return
+    raise ValueError(
+        f"bridge source {bridge_source!r} does not appear in dataset {data.name!r}"
+    )
 
 
 def load_comparison_space(
@@ -54,6 +78,7 @@ def load_comparison_space(
         persistence = CsvPersistence(file_path)
         return persistence.read(cs_config.to_csv_params(data.name))
     else:
+        _check_bridge_source(data, cs_config.bridge_source)
         csg = GroundTruthComparisonSpaceGenerator(
             data.id_table,
             data.true_matches,
@@ -64,6 +89,7 @@ def load_comparison_space(
             seed=seed,
             save=True,
             excluded=_get_excluded(data, data_dir, cs_config),
+            is_bridge=partial(_is_bridge, data, cs_config.bridge_source),
         )
         cluster_file_path = file_path.parent / f"{file_path.stem}-clusters.csv"
         return csg(file_path, cluster_file_path)
