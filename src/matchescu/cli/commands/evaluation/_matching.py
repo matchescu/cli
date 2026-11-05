@@ -1,15 +1,22 @@
 import os
+from dataclasses import replace
+from functools import partial
 
 import click
 import polars as pl
 from matchescu.matching import Matcher
-from matchescu.similarity import GmlGraphPersistence, ReferenceGraph
+from matchescu.similarity import GmlGraphPersistence, MatchResult, ReferenceGraph
 from matchescu.typing import EntityReference
 from pyresolvemetrics import f1, precision, recall
 from rich.progress import Progress
 from sklearn.metrics import matthews_corrcoef
 
-from matchescu.cli.config import EvaluationConfig, new_benchmark_data_factory
+from matchescu.cli.config import (
+    AnyMatcherConfig,
+    EvaluationConfig,
+    new_benchmark_data_factory,
+)
+from matchescu.cli.config._config import EvaluationBenchmarkConfig
 from matchescu.cli.data import load_comparison_space
 from matchescu.cli.models import new_matcher
 from matchescu.cli.runtime import get_options, make_absolute_path
@@ -64,15 +71,39 @@ def _put_record_attr(record: dict, attr: str, value: object) -> dict:
     return r
 
 
+def _degrade_directional_label(result: MatchResult) -> MatchResult:
+    if result.label != 2:
+        return result
+    return replace(result, label=1)
+
+
+def _matcher_dataset_name(
+    ds_config: EvaluationBenchmarkConfig, benchmark_name: str
+) -> str:
+    return ds_config.dataset_alias or benchmark_name
+
+
+def _uses_binary_metrics(
+    model_config: AnyMatcherConfig, degrade_directional: bool
+) -> bool:
+    return model_config.type != "multiclass" or degrade_directional
+
+
 def _add_normal(
     g: ReferenceGraph,
     matcher: Matcher,
     x: EntityReference,
     y: EntityReference,
     record: dict | None = None,
+    degrade_directional: bool = False,
 ) -> dict:
     match_result = matcher(x, y)
-    g.add(match_result)
+    graph_result = (
+        _degrade_directional_label(match_result)
+        if degrade_directional
+        else match_result
+    )
+    g.add(graph_result)
     return _put_record_attr(record, "normal", match_result.label)
 
 
@@ -82,9 +113,15 @@ def _add_reverse(
     x: EntityReference,
     y: EntityReference,
     record: dict | None = None,
+    degrade_directional: bool = False,
 ) -> dict:
     match_result = matcher(y, x)
-    g.add(match_result)
+    graph_result = (
+        _degrade_directional_label(match_result)
+        if degrade_directional
+        else match_result
+    )
+    g.add(graph_result)
     return _put_record_attr(record, "reverse", match_result.label)
 
 
@@ -94,9 +131,24 @@ def _add_both(
     x: EntityReference,
     y: EntityReference,
     record: dict | None = None,
+    degrade_directional: bool = False,
 ) -> dict:
-    record = _add_normal(g, matcher, x, y, record)
-    return _add_reverse(g, matcher, x, y, record)
+    record = _add_normal(
+        g,
+        matcher,
+        x,
+        y,
+        record,
+        degrade_directional=degrade_directional,
+    )
+    return _add_reverse(
+        g,
+        matcher,
+        x,
+        y,
+        record,
+        degrade_directional=degrade_directional,
+    )
 
 
 @click.command("matching")
@@ -125,12 +177,23 @@ def _add_both(
     callback=validate_input_order_option,
     help="input order to evaluate the matcher in (specify up to 3)",
 )
+@click.option(
+    "--degrade-directional-labels",
+    is_flag=True,
+    default=False,
+    help=(
+        "Treat directional matches (label 2) as full matches (label 1) when "
+        "building reference graphs, and evaluate multiclass matchers with "
+        "binary F1 metrics."
+    ),
+)
 @click.pass_context
 def evaluate_matching(
     ctx: click.Context,
     reference_graph_dir: str | os.PathLike,
     stats_csv_path: str | os.PathLike,
     input_orders: list[str],
+    degrade_directional_labels: bool,
 ):
     """Evaluate a matcher's quality in controlled settings."""
     eval_opts: EvalOptions[EvaluationConfig] = get_options(ctx)
@@ -139,9 +202,15 @@ def evaluate_matching(
     output_path = make_absolute_path(reference_graph_dir, root_dir)
     csv_path = make_absolute_path(stats_csv_path, root_dir)
     input_order_map = {
-        InputOrder.normal: _add_normal,
-        InputOrder.reverse: _add_reverse,
-        InputOrder.both: _add_both,
+        InputOrder.normal: partial(
+            _add_normal, degrade_directional=degrade_directional_labels
+        ),
+        InputOrder.reverse: partial(
+            _add_reverse, degrade_directional=degrade_directional_labels
+        ),
+        InputOrder.both: partial(
+            _add_both, degrade_directional=degrade_directional_labels
+        ),
     }
 
     stats = []
@@ -165,7 +234,11 @@ def evaluate_matching(
 
             for model_config in cfg.matching:
                 model_task = progress.add_task(model_config.name, total=len(cs))
-                matcher = new_matcher(model_config, root_dir, benchmark_data.name)
+                matcher = new_matcher(
+                    model_config,
+                    root_dir,
+                    _matcher_dataset_name(ds_config, benchmark_data.name),
+                )
                 graphs = {
                     order: ReferenceGraph(directed=True) for order in input_orders
                 }
@@ -201,7 +274,7 @@ def evaluate_matching(
                     results_csv_path = graph_dir / f"{order}-result.csv"
                     df.write_csv(results_csv_path, include_header=True)
 
-                    if model_config.type != "multiclass":
+                    if _uses_binary_metrics(model_config, degrade_directional_labels):
                         true_matches = {
                             cmp for cmp, label in cs_pair_gt.items() if label > 0
                         }

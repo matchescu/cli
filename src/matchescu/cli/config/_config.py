@@ -71,6 +71,7 @@ class EvaluationBenchmarkConfig(ConfigModel):
     dataset: AnyDatasetConfig
     comparison_space: ComparisonSpaceConfig
     clusters_file_name: str | None = None
+    dataset_alias: str | None = None
 
 
 class ClusteringConfig(ConfigModel):
