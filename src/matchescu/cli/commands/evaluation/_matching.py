@@ -1,6 +1,6 @@
 import os
 from dataclasses import replace
-from functools import partial
+from pathlib import Path
 
 import click
 import polars as pl
@@ -13,16 +13,17 @@ from sklearn.metrics import matthews_corrcoef
 
 from matchescu.cli.config import (
     AnyMatcherConfig,
+    EvaluationBenchmarkConfig,
     EvaluationConfig,
     new_benchmark_data_factory,
 )
-from matchescu.cli.config._config import EvaluationBenchmarkConfig
-from matchescu.cli.data import load_comparison_space
+from matchescu.cli.data import count_comparison_space_rows, load_comparison_space
 from matchescu.cli.models import new_matcher
 from matchescu.cli.runtime import get_options, make_absolute_path
 
 from ._eval_opts import EvalOptions
 from ._input_order import InputOrder, validate_input_order_option
+from ._parallel import UnitReporter, UnitRunner, workers_option
 
 RESULT_SCHEMA_OVERRIDES = {
     "dataset": pl.String,
@@ -65,18 +66,6 @@ def _compute_multiclass_metrics(cs_true_matches, g, order):
     return {"input_order": order, "mcc": matthews_corrcoef(y_true, y_pred)}
 
 
-def _put_record_attr(record: dict, attr: str, value: object) -> dict:
-    r = record or {}
-    r[attr] = value
-    return r
-
-
-def _degrade_directional_label(result: MatchResult) -> MatchResult:
-    if result.label != 2:
-        return result
-    return replace(result, label=1)
-
-
 def _matcher_dataset_name(
     ds_config: EvaluationBenchmarkConfig, benchmark_name: str
 ) -> str:
@@ -89,66 +78,148 @@ def _uses_binary_metrics(
     return model_config.type != "multiclass" or degrade_directional
 
 
-def _add_normal(
-    g: ReferenceGraph,
-    matcher: Matcher,
-    x: EntityReference,
-    y: EntityReference,
-    record: dict | None = None,
-    degrade_directional: bool = False,
-) -> dict:
-    match_result = matcher(x, y)
-    graph_result = (
-        _degrade_directional_label(match_result)
-        if degrade_directional
-        else match_result
-    )
-    g.add(graph_result)
-    return _put_record_attr(record, "normal", match_result.label)
+class ReferenceGraphFiller:
+    def __init__(
+        self, input_order: InputOrder, degrade_directional: bool = False
+    ) -> None:
+        self._degrade_directional = degrade_directional
+        self._input_order = input_order
+
+    def __call__(
+        self,
+        g: ReferenceGraph,
+        m: Matcher,
+        x: EntityReference,
+        y: EntityReference,
+        record: dict | None,
+    ) -> dict:
+        match self._input_order:
+            case InputOrder.normal:
+                return self._add_normal(g, m, x, y)
+            case InputOrder.reverse:
+                return self._add_normal(g, m, x, y)
+            case InputOrder.both:
+                return self._add_both(g, m, x, y)
+
+    def _add_normal(
+        self,
+        g: ReferenceGraph,
+        m: Matcher,
+        x: EntityReference,
+        y: EntityReference,
+        record: dict | None = None,
+    ) -> dict:
+        match_result = m(x, y)
+        g.add(self._optionally_degrade(match_result))
+        return self._put_record_attr(record, "normal", match_result.label)
+
+    def _add_reverse(
+        self,
+        g: ReferenceGraph,
+        m: Matcher,
+        x: EntityReference,
+        y: EntityReference,
+        record: dict | None = None,
+    ) -> dict:
+        match_result = m(y, x)
+        g.add(self._optionally_degrade(match_result))
+        return self._put_record_attr(record, "reverse", match_result.label)
+
+    def _add_both(
+        self,
+        g: ReferenceGraph,
+        m: Matcher,
+        x: EntityReference,
+        y: EntityReference,
+        record: dict | None = None,
+    ) -> dict:
+        record = self._add_normal(g, m, x, y, record)
+        return self._add_reverse(g, m, x, y, record)
+
+    @staticmethod
+    def _put_record_attr(record: dict | None, attr: str, value: object) -> dict:
+        r = record or {}
+        r[attr] = value
+        return r
+
+    def _optionally_degrade(self, result: MatchResult) -> MatchResult:
+        if not self._degrade_directional:
+            return result
+        if result.label == 0 or result.label == 1:
+            return result
+        return replace(result, label=1)
 
 
-def _add_reverse(
-    g: ReferenceGraph,
-    matcher: Matcher,
-    x: EntityReference,
-    y: EntityReference,
-    record: dict | None = None,
-    degrade_directional: bool = False,
-) -> dict:
-    match_result = matcher(y, x)
-    graph_result = (
-        _degrade_directional_label(match_result)
-        if degrade_directional
-        else match_result
+def _eval_matching_unit(
+    ds_config: EvaluationBenchmarkConfig,
+    model_config: AnyMatcherConfig,
+    input_orders: list[str],
+    seed: int,
+    root_dir: Path,
+    output_path: Path,
+    degrade_labels: bool,
+    reporter: UnitReporter,
+) -> list[dict]:
+    """Evaluate one (dataset, model) unit: build graphs, save them, score them."""
+    builder = new_benchmark_data_factory(ds_config.dataset, root_dir)
+    benchmark_data = builder.load_data().create()
+    ds_dir = root_dir / ds_config.dataset.directory
+    cs = load_comparison_space(
+        benchmark_data,
+        ds_dir,
+        ds_config.comparison_space,
+        seed=seed,
     )
-    g.add(graph_result)
-    return _put_record_attr(record, "reverse", match_result.label)
+    cs_pair_gt = {cmp: benchmark_data.true_matches.get(cmp, 0) for cmp in cs}
+    cs_refs = list(map(benchmark_data.id_table.get_all, cs))
+    matcher = new_matcher(model_config, root_dir, benchmark_data.name)
+    graphs = {order: ReferenceGraph(directed=True) for order in input_orders}
+    model_results = {order: [] for order in input_orders}
+    for x, y in cs_refs:
+        r = {
+            "dataset": benchmark_data.name,
+            "model": model_config.name,
+            "left_id": x.id.label,
+            "left_source": x.id.source,
+            "right_id": y.id.label,
+            "right_source": y.id.source,
+            "true_label": benchmark_data.true_matches.get((x.id, y.id), 0),
+        }
+        for order, g in graphs.items():
+            graph_filler = ReferenceGraphFiller(InputOrder(order), degrade_labels)
+            model_results[order].append(graph_filler(g, matcher, x, y, r))
+        reporter.advance(len(input_orders))
 
+    graph_dir = output_path / benchmark_data.name / model_config.name
+    graph_dir.mkdir(parents=True, exist_ok=True)
+    stats = []
+    for order, g in graphs.items():
+        g.save(GmlGraphPersistence(graph_dir / f"{order}-graph.gml"))
 
-def _add_both(
-    g: ReferenceGraph,
-    matcher: Matcher,
-    x: EntityReference,
-    y: EntityReference,
-    record: dict | None = None,
-    degrade_directional: bool = False,
-) -> dict:
-    record = _add_normal(
-        g,
-        matcher,
-        x,
-        y,
-        record,
-        degrade_directional=degrade_directional,
-    )
-    return _add_reverse(
-        g,
-        matcher,
-        x,
-        y,
-        record,
-        degrade_directional=degrade_directional,
-    )
+        df = (
+            pl.DataFrame(
+                data=model_results[order],
+                schema_overrides=RESULT_SCHEMA_OVERRIDES,
+            )
+            .fill_nan(-1)
+            .fill_null(-1)
+        )
+        results_csv_path = graph_dir / f"{order}-result.csv"
+        df.write_csv(results_csv_path, include_header=True)
+
+        if _uses_binary_metrics(model_config, degrade_labels):
+            true_matches = {cmp for cmp, label in cs_pair_gt.items() if label > 0}
+            metrics = _compute_binary_classifier_metrics(true_matches, g, order)
+        else:
+            metrics = _compute_multiclass_metrics(cs_pair_gt, g, order)
+        stats.append(
+            {
+                "dataset": benchmark_data.name,
+                "model": model_config.name,
+                **metrics,
+            }
+        )
+    return stats
 
 
 @click.command("matching")
@@ -187,6 +258,7 @@ def _add_both(
         "binary F1 metrics."
     ),
 )
+@workers_option()
 @click.pass_context
 def evaluate_matching(
     ctx: click.Context,
@@ -194,6 +266,7 @@ def evaluate_matching(
     stats_csv_path: str | os.PathLike,
     input_orders: list[str],
     degrade_directional_labels: bool,
+    workers: int | None,
 ):
     """Evaluate a matcher's quality in controlled settings."""
     eval_opts: EvalOptions[EvaluationConfig] = get_options(ctx)
@@ -201,94 +274,40 @@ def evaluate_matching(
     cfg = eval_opts.config
     output_path = make_absolute_path(reference_graph_dir, root_dir)
     csv_path = make_absolute_path(stats_csv_path, root_dir)
-    input_order_map = {
-        InputOrder.normal: partial(
-            _add_normal, degrade_directional=degrade_directional_labels
-        ),
-        InputOrder.reverse: partial(
-            _add_reverse, degrade_directional=degrade_directional_labels
-        ),
-        InputOrder.both: partial(
-            _add_both, degrade_directional=degrade_directional_labels
-        ),
+
+    n_orders = len(input_orders)
+    per_ds_count = {
+        ds_config.dataset.directory: count_comparison_space_rows(
+            root_dir / ds_config.dataset.directory, ds_config.comparison_space
+        )
+        for ds_config in cfg.benchmark_data
     }
 
+    def _unit_total(ds_dir: str) -> int | None:
+        count = per_ds_count[ds_dir]
+        return count * n_orders if count is not None else None
+
+    units = [
+        (
+            f"{ds_config.dataset.directory}/{model_config.name}",
+            (
+                ds_config,
+                model_config,
+                list(input_orders),
+                cfg.seed,
+                root_dir,
+                output_path,
+                degrade_directional_labels,
+            ),
+            _unit_total(ds_config.dataset.directory),
+        )
+        for ds_config in cfg.benchmark_data
+        for model_config in cfg.matching
+    ]
     stats = []
     with Progress() as progress:
-        for ds_config in cfg.benchmark_data:
-            builder = new_benchmark_data_factory(ds_config.dataset, root_dir)
-            benchmark_data = builder.load_data().create()
-            ds_dir = root_dir / ds_config.dataset.directory
-            cs = load_comparison_space(
-                benchmark_data,
-                ds_dir,
-                ds_config.comparison_space,
-                seed=cfg.seed,
-            )
-            cs_pair_gt = {cmp: benchmark_data.true_matches.get(cmp, 0) for cmp in cs}
-            cs_refs = list(map(benchmark_data.id_table.get_all, cs))
-            total_comparisons = len(cs) * len(cfg.matching)
-            ds_task = progress.add_task(
-                f"dataset {benchmark_data.name}", total=total_comparisons
-            )
-
-            for model_config in cfg.matching:
-                model_task = progress.add_task(model_config.name, total=len(cs))
-                matcher = new_matcher(
-                    model_config,
-                    root_dir,
-                    _matcher_dataset_name(ds_config, benchmark_data.name),
-                )
-                graphs = {
-                    order: ReferenceGraph(directed=True) for order in input_orders
-                }
-                model_results = {order: [] for order in input_orders}
-                for x, y in cs_refs:
-                    r = {
-                        "dataset": benchmark_data.name,
-                        "model": model_config.name,
-                        "left_id": x.id.label,
-                        "left_source": x.id.source,
-                        "right_id": y.id.label,
-                        "right_source": y.id.source,
-                        "true_label": benchmark_data.true_matches.get((x.id, y.id), 0),
-                    }
-                    for order, g in graphs.items():
-                        add_to_graph = input_order_map[InputOrder(order)]
-                        model_results[order].append(add_to_graph(g, matcher, x, y, r))
-                    progress.update(model_task, advance=1)
-                    progress.update(ds_task, advance=1)
-                graph_dir = output_path / benchmark_data.name / model_config.name
-                graph_dir.mkdir(parents=True, exist_ok=True)
-                for order, g in graphs.items():
-                    g.save(GmlGraphPersistence(graph_dir / f"{order}-graph.gml"))
-
-                    df = (
-                        pl.DataFrame(
-                            data=model_results[order],
-                            schema_overrides=RESULT_SCHEMA_OVERRIDES,
-                        )
-                        .fill_nan(-1)
-                        .fill_null(-1)
-                    )
-                    results_csv_path = graph_dir / f"{order}-result.csv"
-                    df.write_csv(results_csv_path, include_header=True)
-
-                    if _uses_binary_metrics(model_config, degrade_directional_labels):
-                        true_matches = {
-                            cmp for cmp, label in cs_pair_gt.items() if label > 0
-                        }
-                        metrics = _compute_binary_classifier_metrics(
-                            true_matches, g, order
-                        )
-                    else:
-                        metrics = _compute_multiclass_metrics(cs_pair_gt, g, order)
-                    stats.append(
-                        {
-                            "dataset": benchmark_data.name,
-                            "model": model_config.name,
-                            **metrics,
-                        }
-                    )
+        runner = UnitRunner(workers, progress)
+        for _, unit_stats in runner.run(units, _eval_matching_unit):
+            stats.extend(unit_stats)
     stats_df = pl.DataFrame(stats)
     stats_df.write_csv(csv_path)

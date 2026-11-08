@@ -48,6 +48,23 @@ def _check_bridge_source(data: BenchmarkData, bridge_source: str | None) -> None
     )
 
 
+def count_comparison_space_rows(
+    data_dir: Path, cs_config: ComparisonSpaceConfig
+) -> int | None:
+    """Count the comparisons in the persisted comparison space CSV.
+
+    Returns ``None`` when the file does not exist yet (it is generated lazily
+    by ``load_comparison_space``), letting callers fall back to an indeterminate
+    progress display.
+    """
+    file_path = data_dir / cs_config.file_name
+    if not file_path.is_file():
+        return None
+    with open(file_path, "rb") as f:
+        rows = sum(1 for _ in f)
+    return rows - 1 if cs_config.has_header and rows > 0 else rows
+
+
 def load_comparison_space(
     data: BenchmarkData,
     data_dir: Path,
