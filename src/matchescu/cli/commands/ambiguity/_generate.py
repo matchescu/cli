@@ -91,7 +91,7 @@ class AmbiguityGenerator:
         multiple of the mean length of the two blended values. Candidates
         over the limit are dropped; when none fit, the shortest candidates
         are kept. ``None`` disables the limit.
-    :param pairing: selects how records of different clusters are paired,
+    :param pairing_settings: selects how records of different clusters are paired,
         for generation and for threshold analysis alike.
     :param dataset_name: name of the input dataset; hashed into string bridge
         labels so they stay reproducible and distinct across datasets.
@@ -119,7 +119,7 @@ class AmbiguityGenerator:
         target_links: int = 1,
         max_length_ratio: float | None = None,
         *,
-        pairing: PairingSettings | None = None,
+        pairing_settings: PairingSettings | None = None,
         dataset_name: str = "",
     ) -> None:
         if not all(0 < alpha < 1 for alpha in alphas):
@@ -130,7 +130,9 @@ class AmbiguityGenerator:
             raise ValueError("target_links must be >= 1")
         if max_length_ratio is not None and max_length_ratio < 1:
             raise ValueError("max_length_ratio must be >= 1")
-        pairing = pairing if pairing is not None else PairingSettings()
+
+        if pairing_settings is None:
+            pairing_settings = PairingSettings()
         self._id_table = id_table
         self._cluster_id_map = {
             cluster_idx: set(cluster)
@@ -153,7 +155,7 @@ class AmbiguityGenerator:
         self._bridge_terms = self._build_bridge_terms()
         self._alphas = tuple(sorted(set(alphas)))
         self._target_floor = target_floor
-        self._target_links = pairing.target_links_for(target_links)
+        self._target_links = pairing_settings.target_links_for(target_links)
         self._max_length_ratio = max_length_ratio
         self._dataset_name = dataset_name
         self.__settings = GenerationSettings(
@@ -165,9 +167,9 @@ class AmbiguityGenerator:
             target_floor=target_floor,
             target_links=self._target_links,
             max_length_ratio=max_length_ratio,
-            pairing=pairing,
+            pairing=pairing_settings,
         )
-        self.__pairing = pairing.build(self.__pairing_input())
+        self.__pairing = pairing_settings.get_strategy(self.__pairing_input())
 
     def __pairing_input(self) -> PairingInput:
         return PairingInput(
@@ -225,7 +227,7 @@ class AmbiguityGenerator:
             target_floor=input_cfg.target_floor,
             target_links=input_cfg.target_links,
             max_length_ratio=input_cfg.max_length_ratio,
-            pairing=pairing,
+            pairing_settings=pairing,
             dataset_name=data.name,
         )
 

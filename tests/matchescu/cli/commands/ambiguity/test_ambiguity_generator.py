@@ -501,7 +501,7 @@ def _simple_pairing(neighbours=2):
 
 def _simple_generator(table, clusters, **kwargs):
     return AmbiguityGenerator(
-        table, clusters, ["name"], pairing=_simple_pairing(), **kwargs
+        table, clusters, ["name"], pairing_settings=_simple_pairing(), **kwargs
     )
 
 
@@ -554,7 +554,11 @@ def test_simple_pairs_settings_report_single_target_link_when_configured_higher(
 ):
     with pytest.warns(UserWarning, match="targetLinks"):
         sut = AmbiguityGenerator(
-            id_table, clusters, ["name"], target_links=2, pairing=_simple_pairing()
+            id_table,
+            clusters,
+            ["name"],
+            target_links=2,
+            pairing_settings=_simple_pairing(),
         )
 
     assert sut.settings.target_links == 1

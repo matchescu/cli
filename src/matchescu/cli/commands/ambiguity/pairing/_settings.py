@@ -49,7 +49,7 @@ class PairingSettings:
     scope: PairingScope = PairingScope.ANY
     max_block_size: int = DEFAULT_MAX_BLOCK_SIZE
 
-    def build(self, pairing_input: PairingInput) -> PairingStrategy:
+    def get_strategy(self, pairing_input: PairingInput) -> PairingStrategy:
         """Build the configured strategy.
 
         :param pairing_input: cluster layout, ambiguity scores and progress

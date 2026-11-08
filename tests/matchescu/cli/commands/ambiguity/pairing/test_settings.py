@@ -30,14 +30,14 @@ def pairing_input():
     )
 
 
-def test_build_returns_greedy_cluster_reps_by_default(pairing_input):
-    assert isinstance(PairingSettings().build(pairing_input), GreedyClusterReps)
+def test_get_strategy_returns_greedy_cluster_reps_by_default(pairing_input):
+    assert isinstance(PairingSettings().get_strategy(pairing_input), GreedyClusterReps)
 
 
-def test_build_returns_simple_pairs_when_selected(pairing_input):
+def test_get_strategy_returns_simple_pairs_when_selected(pairing_input):
     settings = PairingSettings(name=PairingStrategyName.SIMPLE_PAIRS)
 
-    assert isinstance(settings.build(pairing_input), SimplePairs)
+    assert isinstance(settings.get_strategy(pairing_input), SimplePairs)
 
 
 def test_target_links_for_keeps_value_when_greedy():
