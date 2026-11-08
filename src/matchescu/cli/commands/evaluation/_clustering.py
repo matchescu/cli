@@ -15,7 +15,7 @@ from matchescu.clustering import (
     WeaklyConnectedComponents,
 )
 from matchescu.matching.evaluation.data.benchmark import BenchmarkData
-from matchescu.similarity import GmlGraphPersistence, ReferenceGraph
+from matchescu.reference_store.comparison_space import BinaryComparisonSpace
 from matchescu.typing import EntityReferenceIdentifier as RefId
 from pyresolvemetrics import (
     adjusted_rand_index,
@@ -34,7 +34,11 @@ from matchescu.cli.config import (
     EvaluationConfig,
     new_benchmark_data_factory,
 )
-from matchescu.cli.data import load_comparison_space, load_comparison_space_clusters
+from matchescu.cli.data import (
+    load_comparison_space,
+    load_comparison_space_clusters,
+    load_reference_graph,
+)
 from matchescu.cli.runtime import get_options, make_absolute_path
 
 from ._eval_opts import EvalOptions
@@ -46,6 +50,7 @@ from ._plots import (
     plot_ground_truth_clusters,
     plot_predicted_clusters,
 )
+from ._stale import REBUILD_FROM_MATCHING, abort_on_stale_graph
 
 CLUSTERING_ALGOS: dict[str, Callable[..., ClusteringAlgorithm[RefId]]] = {
     "WCC": partial(WeaklyConnectedComponents, threshold=0.0),
@@ -98,7 +103,7 @@ def _load_dataset_context(
     ds_config: EvaluationBenchmarkConfig,
     seed: int,
     root_dir: Path,
-) -> tuple[str, list[RefId], frozenset[frozenset[RefId]]]:
+) -> tuple[str, list[RefId], frozenset[frozenset[RefId]], BinaryComparisonSpace]:
     ds_dir = root_dir / ds_config.dataset.directory
     cs = load_comparison_space(
         benchmark_data, ds_dir, ds_config.comparison_space, seed=seed
@@ -111,7 +116,7 @@ def _load_dataset_context(
     true_clusters = load_comparison_space_clusters(
         clusters_path, benchmark_data, cs, all_ref_ids
     )
-    return benchmark_data.name, all_ref_ids, true_clusters
+    return benchmark_data.name, all_ref_ids, true_clusters, cs
 
 
 def _prepare_dataset(
@@ -125,7 +130,7 @@ def _prepare_dataset(
     benchmark_data = _load_benchmark_data(ds_config, root_dir)
     if not benchmark_data.ref_id_cluster_map:
         return DatasetStatus(benchmark_data.name, False)
-    name, _, true_clusters = _load_dataset_context(
+    name, _, true_clusters, _ = _load_dataset_context(
         benchmark_data, ds_config, seed, root_dir
     )
     if plot_root is not None:
@@ -156,7 +161,7 @@ def _eval_clustering_unit(
 ) -> list[dict]:
     """Evaluate one (clustering algorithm, dataset) unit across all matchers/orders."""
     benchmark_data = _load_benchmark_data(ds_config, root_dir)
-    ds_name, all_ref_ids, true_clusters = _load_dataset_context(
+    ds_name, all_ref_ids, true_clusters, cs = _load_dataset_context(
         benchmark_data, ds_config, seed, root_dir
     )
     clustering_algo = _new_clusterer(algo_key, all_ref_ids, seed)
@@ -164,8 +169,7 @@ def _eval_clustering_unit(
     for matcher_name in matcher_names:
         for order in input_orders:
             gml_path = graph_root / ds_name / matcher_name / f"{order}-graph.gml"
-            # 'load' overrides whether graph is directed or not
-            graph = ReferenceGraph().load(GmlGraphPersistence(gml_path))
+            graph = load_reference_graph(gml_path, cs)
             er_result = clustering_algo(graph)
             metrics_dict = {
                 key: metric(true_clusters, er_result) for key, metric in CLUSTER_METRICS
@@ -292,8 +296,9 @@ def evaluate_clustering(
     stats = []
     with Progress() as progress:
         runner = UnitRunner(workers, progress)
-        for _, unit_stats in runner.run(units, _eval_clustering_unit):
-            stats.extend(unit_stats)
+        with abort_on_stale_graph(REBUILD_FROM_MATCHING):
+            for _, unit_stats in runner.run(units, _eval_clustering_unit):
+                stats.extend(unit_stats)
 
     stats_df = pl.DataFrame(stats)
     stats_df.write_csv(csv_path)

@@ -3,17 +3,21 @@ from pathlib import Path
 
 import click
 import polars as pl
-from matchescu.similarity import GmlGraphPersistence, ReferenceGraph
 from rich.progress import Progress
 from sklearn.metrics import confusion_matrix
 
 from matchescu.cli.config import EvaluationConfig, new_benchmark_data_factory
-from matchescu.cli.data import count_comparison_space_rows, load_comparison_space
+from matchescu.cli.data import (
+    count_comparison_space_rows,
+    load_comparison_space,
+    load_reference_graph,
+)
 from matchescu.cli.runtime import get_options, make_absolute_path
 
 from ._eval_opts import EvalOptions
 from ._input_order import InputOrder, validate_input_order_option
 from ._parallel import UnitReporter, UnitRunner, workers_option
+from ._stale import REBUILD_FROM_MATCHING, abort_on_stale_graph
 
 _LABEL_NAMES = {
     0: "non-match",
@@ -33,7 +37,7 @@ def _confusion_matrix_unit(
     reporter: UnitReporter,
 ) -> list[dict]:
     """Compute the confusion matrix rows for one (dataset, matcher, order) unit."""
-    graph = ReferenceGraph.load(GmlGraphPersistence(gml_path))
+    graph = load_reference_graph(gml_path, comparisons)
     y_pred = [graph.label(x, y) for x, y in comparisons]
     reporter.advance(len(comparisons))
     true_labels = sorted({0, *y_true})
@@ -144,8 +148,9 @@ def evaluate_confusion_matrix(
     cm_rows = []
     with Progress() as progress:
         runner = UnitRunner(workers, progress)
-        for _, rows in runner.run(units, _confusion_matrix_unit):
-            cm_rows.extend(rows)
+        with abort_on_stale_graph(REBUILD_FROM_MATCHING):
+            for _, rows in runner.run(units, _confusion_matrix_unit):
+                cm_rows.extend(rows)
 
     confusion_matrix_df = pl.DataFrame(cm_rows)
     confusion_matrix_df.write_csv(output_path)

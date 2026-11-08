@@ -61,6 +61,7 @@ def _run_unit(
         tmp_path,
         tmp_path / "graphs",
         False,
+        False,
         plot_root,
         120,
         UnitReporter("k"),
@@ -180,7 +181,7 @@ def test_command_passes_plot_options_to_every_unit(eval_obj, tmp_path, command_u
 
     _invoke(eval_obj, tmp_path, "--graph-plots", str(plots), "--plot-dpi", "75")
 
-    assert {call.args[7:9] for call in unit.call_args_list} == {(plots, 75)}
+    assert {call.args[8:10] for call in unit.call_args_list} == {(plots, 75)}
 
 
 def test_command_disables_plots_by_default(eval_obj, tmp_path, command_units):
@@ -189,4 +190,4 @@ def test_command_disables_plots_by_default(eval_obj, tmp_path, command_units):
     _invoke(eval_obj, tmp_path)
 
     assert truth.call_count == 0
-    assert {call.args[7] for call in unit.call_args_list} == {None}
+    assert {call.args[8] for call in unit.call_args_list} == {None}

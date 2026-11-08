@@ -9,6 +9,7 @@ from matchescu.matching.evaluation.data.benchmark import BenchmarkData
 from matchescu.reference_store.comparison_space import BinaryComparisonSpace
 from matchescu.similarity import GmlGraphPersistence, MatchResult, ReferenceGraph
 from matchescu.typing import EntityReference
+from matchescu.typing import EntityReferenceIdentifier as RefId
 from pyresolvemetrics import f1, precision, recall
 from rich.progress import Progress
 from sklearn.metrics import matthews_corrcoef
@@ -19,7 +20,11 @@ from matchescu.cli.config import (
     EvaluationConfig,
     new_benchmark_data_factory,
 )
-from matchescu.cli.data import count_comparison_space_rows, load_comparison_space
+from matchescu.cli.data import (
+    count_comparison_space_rows,
+    load_comparison_space,
+    load_reference_graph,
+)
 from matchescu.cli.models import new_matcher
 from matchescu.cli.runtime import get_options, make_absolute_path
 
@@ -32,7 +37,13 @@ from ._plots import (
     plot_ground_truth_graph,
     plot_predicted_graph,
 )
+from ._stale import (
+    REBUILD_WITHOUT_SKIP,
+    abort_on_stale_graph,
+    stale_message,
+)
 
+RESULT_PAIR_COLUMNS = ["left_id", "left_source", "right_id", "right_source"]
 RESULT_SCHEMA_OVERRIDES = {
     "dataset": pl.String,
     "model": pl.String,
@@ -195,6 +206,27 @@ def _graph_path(graph_dir: Path, order: str) -> Path:
 def _csv_results_path(graph_dir: Path, order: str) -> Path:
     return graph_dir / f"{order}-result.csv"
 
+
+def _require_complete_results(
+    results_csv_path: Path, cs: BinaryComparisonSpace
+) -> None:
+    """Abort when the saved results don't cover exactly the comparison space."""
+    scored = pl.read_csv(results_csv_path).select(RESULT_PAIR_COLUMNS)
+    saved = {
+        frozenset((RefId(left, left_source), RefId(right, right_source)))
+        for left, left_source, right, right_source in scored.iter_rows()
+    }
+    expected = {frozenset(pair) for pair in cs}
+    if saved == expected:
+        return
+    reason = (
+        "These REALLY are not the droids you're looking for.\n"
+        f"{results_csv_path} does not list the comparisons of your config "
+        f"({len(expected - saved)} missing, {len(saved - expected)} unexpected)."
+    )
+    raise click.ClickException(stale_message(reason, REBUILD_WITHOUT_SKIP))
+
+
 def _eval_matching_unit(
     ds_config: EvaluationBenchmarkConfig,
     model_config: AnyMatcherConfig,
@@ -223,12 +255,12 @@ def _eval_matching_unit(
     for order, g in graphs.items():
         graph_dir = output_path / benchmark_data.name / model_config.name
         graph_path = _graph_path(graph_dir, order)
-        graph_persistence = GmlGraphPersistence(graph_path)
         results_csv_path = _csv_results_path(graph_dir, order)
 
         if skip_existing and graph_path.exists() and results_csv_path.exists():
             reporter.advance(len(cs_refs))
-            g = ReferenceGraph.load(graph_persistence)
+            _require_complete_results(results_csv_path, cs)
+            g = load_reference_graph(graph_path, cs)
         else:
             # fill & save graph
             graph_filler = ReferenceGraphFiller(InputOrder(order), degrade_labels)
@@ -415,7 +447,8 @@ def evaluate_matching(
         runner = UnitRunner(workers, progress)
         if plot_root is not None:
             _plot_ground_truths(runner, cfg, root_dir, plot_root, plot_dpi)
-        for _, unit_stats in runner.run(units, _eval_matching_unit):
-            stats.extend(unit_stats)
+        with abort_on_stale_graph(REBUILD_WITHOUT_SKIP):
+            for _, unit_stats in runner.run(units, _eval_matching_unit):
+                stats.extend(unit_stats)
     stats_df = pl.DataFrame(stats)
     stats_df.write_csv(csv_path)

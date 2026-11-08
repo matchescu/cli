@@ -66,7 +66,7 @@ def prepared_dataset(patch_dataset, monkeypatch, refs_pair):
     monkeypatch.setattr(
         _clustering,
         "_load_dataset_context",
-        lambda *_: ("ds", list(refs_pair), clusters),
+        lambda *_: ("ds", list(refs_pair), clusters, []),
     )
     plot = Mock()
     monkeypatch.setattr(_clustering, "plot_ground_truth_clusters", plot)
@@ -98,12 +98,6 @@ def test_prepare_dataset_skips_plots_without_plot_root(prepared_dataset, tmp_pat
     plot.assert_not_called()
 
 
-class _FakeGraphs:
-    @classmethod
-    def load(cls, _persistence):
-        return "graph"
-
-
 @pytest.fixture
 def unit_env(monkeypatch, refs_pair):
     clusters = frozenset({frozenset(refs_pair)})
@@ -111,9 +105,9 @@ def unit_env(monkeypatch, refs_pair):
     monkeypatch.setattr(
         _clustering,
         "_load_dataset_context",
-        lambda *_: ("ds", list(refs_pair), clusters),
+        lambda *_: ("ds", list(refs_pair), clusters, []),
     )
-    monkeypatch.setattr(_clustering, "ReferenceGraph", _FakeGraphs)
+    monkeypatch.setattr(_clustering, "load_reference_graph", lambda *_: "graph")
     monkeypatch.setattr(
         _clustering, "_new_clusterer", lambda *_: lambda _graph: clusters
     )
