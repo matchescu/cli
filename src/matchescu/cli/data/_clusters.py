@@ -21,6 +21,9 @@ def load_comparison_space_clusters(
 ) -> frozenset[frozenset[RefId]]:
     """Load the clusters saved by ``GroundTruthComparisonSpaceGenerator``.
 
+    Clusters read from ``path`` are restricted to ``all_ref_ids``, so the result
+    describes the comparison space only.
+
     :param path: CSV file containing the clustering information
     :param data: if path doesn't exist, generate clusters from the ground truth
         provided by this parameter
@@ -31,6 +34,7 @@ def load_comparison_space_clusters(
         for singleton assignment.
     """
     path = Path(path)
+    all_ref_ids = list(all_ref_ids)
     max_id = 0
     if path.exists():
         clusters = read_clusters_csv(
@@ -40,8 +44,9 @@ def load_comparison_space_clusters(
             source_col=1,
             label_col=2,
         )
+        clusters = _restrict_to(clusters, all_ref_ids)
         clustered_refs = {ref_id for cluster in clusters.values() for ref_id in cluster}
-        max_id = max(clusters.keys())
+        max_id = max(clusters.keys(), default=0)
     else:
         df = downscale_clusters(data, cs, path)
         clusters = {}
@@ -59,6 +64,15 @@ def load_comparison_space_clusters(
         clusters.setdefault(max_id + 1, set()).add(ref_id)
         max_id += 1
     return frozenset(frozenset(cluster) for cluster_no, cluster in clusters.items())
+
+
+def _restrict_to(
+    clusters: dict[int, set[RefId]], ref_ids: Iterable[RefId]
+) -> dict[int, set[RefId]]:
+    """Keep only the members found in ``ref_ids``; drop clusters left empty."""
+    allowed = set(ref_ids)
+    restricted = {no: members & allowed for no, members in clusters.items()}
+    return {no: members for no, members in restricted.items() if members}
 
 
 def downscale_clusters(

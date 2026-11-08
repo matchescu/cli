@@ -5,6 +5,8 @@ from pathlib import Path
 import click
 import polars as pl
 from matchescu.matching import Matcher
+from matchescu.matching.evaluation.data.benchmark import BenchmarkData
+from matchescu.reference_store.comparison_space import BinaryComparisonSpace
 from matchescu.similarity import GmlGraphPersistence, MatchResult, ReferenceGraph
 from matchescu.typing import EntityReference
 from pyresolvemetrics import f1, precision, recall
@@ -24,6 +26,12 @@ from matchescu.cli.runtime import get_options, make_absolute_path
 from ._eval_opts import EvalOptions
 from ._input_order import InputOrder, validate_input_order_option
 from ._parallel import UnitReporter, UnitRunner, workers_option
+from ._plots import (
+    PlotDir,
+    plot_dpi_option,
+    plot_ground_truth_graph,
+    plot_predicted_graph,
+)
 
 RESULT_SCHEMA_OVERRIDES = {
     "dataset": pl.String,
@@ -64,12 +72,6 @@ def _compute_multiclass_metrics(cs_true_matches, g, order):
         else:
             y_pred.append(0)
     return {"input_order": order, "mcc": matthews_corrcoef(y_true, y_pred)}
-
-
-def _matcher_dataset_name(
-    ds_config: EvaluationBenchmarkConfig, benchmark_name: str
-) -> str:
-    return ds_config.dataset_alias or benchmark_name
 
 
 def _uses_binary_metrics(
@@ -150,6 +152,42 @@ class ReferenceGraphFiller:
         return replace(result, label=1)
 
 
+def _load_dataset(
+    ds_config: EvaluationBenchmarkConfig, root_dir: Path, seed: int
+) -> tuple[BenchmarkData, BinaryComparisonSpace]:
+    builder = new_benchmark_data_factory(ds_config.dataset, root_dir)
+    benchmark_data = builder.load_data().create()
+    cs = load_comparison_space(
+        benchmark_data,
+        root_dir / ds_config.dataset.directory,
+        ds_config.comparison_space,
+        seed=seed,
+    )
+    return benchmark_data, cs
+
+
+def _comparison_labels(
+    benchmark_data: BenchmarkData, cs: BinaryComparisonSpace
+) -> dict[tuple, int]:
+    return {cmp: benchmark_data.true_matches.get(cmp, 0) for cmp in cs}
+
+
+def _plot_ground_truth_unit(
+    ds_config: EvaluationBenchmarkConfig,
+    seed: int,
+    root_dir: Path,
+    plot_root: Path,
+    dpi: int,
+    reporter: UnitReporter,
+) -> str:
+    """Render one dataset's ground-truth graph and save the shared layout."""
+    benchmark_data, cs = _load_dataset(ds_config, root_dir, seed)
+    labels = _comparison_labels(benchmark_data, cs)
+    plot_dir = PlotDir(plot_root, benchmark_data.name)
+    plot_ground_truth_graph(plot_dir, labels, seed, dpi)
+    return benchmark_data.name
+
+
 def _eval_matching_unit(
     ds_config: EvaluationBenchmarkConfig,
     model_config: AnyMatcherConfig,
@@ -158,19 +196,13 @@ def _eval_matching_unit(
     root_dir: Path,
     output_path: Path,
     degrade_labels: bool,
+    plot_root: Path | None,
+    dpi: int,
     reporter: UnitReporter,
 ) -> list[dict]:
     """Evaluate one (dataset, model) unit: build graphs, save them, score them."""
-    builder = new_benchmark_data_factory(ds_config.dataset, root_dir)
-    benchmark_data = builder.load_data().create()
-    ds_dir = root_dir / ds_config.dataset.directory
-    cs = load_comparison_space(
-        benchmark_data,
-        ds_dir,
-        ds_config.comparison_space,
-        seed=seed,
-    )
-    cs_pair_gt = {cmp: benchmark_data.true_matches.get(cmp, 0) for cmp in cs}
+    benchmark_data, cs = _load_dataset(ds_config, root_dir, seed)
+    cs_pair_gt = _comparison_labels(benchmark_data, cs)
     cs_refs = list(map(benchmark_data.id_table.get_all, cs))
     matcher = new_matcher(model_config, root_dir, benchmark_data.name)
     graphs = {order: ReferenceGraph(directed=True) for order in input_orders}
@@ -219,7 +251,37 @@ def _eval_matching_unit(
                 **metrics,
             }
         )
+        if plot_root is not None:
+            plot_predicted_graph(
+                PlotDir(plot_root, benchmark_data.name),
+                g,
+                cs_pair_gt,
+                model_config.name,
+                order,
+                {k: v for k, v in metrics.items() if k != "input_order"},
+                ordered=model_config.type == "multiclass",
+                dpi=dpi,
+            )
     return stats
+
+
+def _plot_ground_truths(
+    runner: UnitRunner,
+    cfg: EvaluationConfig,
+    root_dir: Path,
+    plot_root: Path,
+    dpi: int,
+) -> None:
+    units = [
+        (
+            f"ground-truth/{ds_config.dataset.directory}",
+            (ds_config, cfg.seed, root_dir, plot_root, dpi),
+            None,
+        )
+        for ds_config in cfg.benchmark_data
+    ]
+    for _ in runner.run(units, _plot_ground_truth_unit):
+        pass
 
 
 @click.command("matching")
@@ -235,8 +297,17 @@ def _eval_matching_unit(
     "--stats-csv-path",
     required=True,
     type=click.Path(dir_okay=False, writable=True, resolve_path=True),
-    help="directory where reference graphs will be exported in GML format",
+    help="CSV file where the matching metrics will be written",
 )
+@click.option(
+    "--graph-plots",
+    "graph_plots",
+    default=None,
+    type=click.Path(file_okay=False, dir_okay=True, writable=True, resolve_path=True),
+    help="directory for reference graph plots, one folder per dataset; "
+    "plots are only generated when given",
+)
+@plot_dpi_option()
 @click.option(
     "-i",
     "--input-order",
@@ -264,6 +335,8 @@ def evaluate_matching(
     ctx: click.Context,
     reference_graph_dir: str | os.PathLike,
     stats_csv_path: str | os.PathLike,
+    graph_plots: str | os.PathLike | None,
+    plot_dpi: int,
     input_orders: list[str],
     degrade_directional_labels: bool,
     workers: int | None,
@@ -274,6 +347,7 @@ def evaluate_matching(
     cfg = eval_opts.config
     output_path = make_absolute_path(reference_graph_dir, root_dir)
     csv_path = make_absolute_path(stats_csv_path, root_dir)
+    plot_root = make_absolute_path(graph_plots, root_dir) if graph_plots else None
 
     n_orders = len(input_orders)
     per_ds_count = {
@@ -298,6 +372,8 @@ def evaluate_matching(
                 root_dir,
                 output_path,
                 degrade_directional_labels,
+                plot_root,
+                plot_dpi,
             ),
             _unit_total(ds_config.dataset.directory),
         )
@@ -307,6 +383,8 @@ def evaluate_matching(
     stats = []
     with Progress() as progress:
         runner = UnitRunner(workers, progress)
+        if plot_root is not None:
+            _plot_ground_truths(runner, cfg, root_dir, plot_root, plot_dpi)
         for _, unit_stats in runner.run(units, _eval_matching_unit):
             stats.extend(unit_stats)
     stats_df = pl.DataFrame(stats)
