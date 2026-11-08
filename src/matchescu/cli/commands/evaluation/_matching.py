@@ -188,6 +188,13 @@ def _plot_ground_truth_unit(
     return benchmark_data.name
 
 
+def _graph_path(graph_dir: Path, order: str) -> Path:
+    return graph_dir / f"{order}-graph.gml"
+
+
+def _csv_results_path(graph_dir: Path, order: str) -> Path:
+    return graph_dir / f"{order}-result.csv"
+
 def _eval_matching_unit(
     ds_config: EvaluationBenchmarkConfig,
     model_config: AnyMatcherConfig,
@@ -196,6 +203,7 @@ def _eval_matching_unit(
     root_dir: Path,
     output_path: Path,
     degrade_labels: bool,
+    skip_existing: bool,
     plot_root: Path | None,
     dpi: int,
     reporter: UnitReporter,
@@ -210,38 +218,48 @@ def _eval_matching_unit(
     )
     graphs = {order: ReferenceGraph(directed=True) for order in input_orders}
     model_results = {order: [] for order in input_orders}
-    for x, y in cs_refs:
-        r = {
-            "dataset": benchmark_data.name,
-            "model": model_config.name,
-            "left_id": x.id.label,
-            "left_source": x.id.source,
-            "right_id": y.id.label,
-            "right_source": y.id.source,
-            "true_label": benchmark_data.true_matches.get((x.id, y.id), 0),
-        }
-        for order, g in graphs.items():
-            graph_filler = ReferenceGraphFiller(InputOrder(order), degrade_labels)
-            model_results[order].append(graph_filler(g, matcher, x, y, r))
-        reporter.advance(len(input_orders))
 
-    graph_dir = output_path / benchmark_data.name / model_config.name
-    graph_dir.mkdir(parents=True, exist_ok=True)
     stats = []
     for order, g in graphs.items():
-        g.save(GmlGraphPersistence(graph_dir / f"{order}-graph.gml"))
+        graph_dir = output_path / benchmark_data.name / model_config.name
+        graph_path = _graph_path(graph_dir, order)
+        graph_persistence = GmlGraphPersistence(graph_path)
+        results_csv_path = _csv_results_path(graph_dir, order)
 
-        df = (
-            pl.DataFrame(
-                data=model_results[order],
-                schema_overrides=RESULT_SCHEMA_OVERRIDES,
+        if skip_existing and graph_path.exists() and results_csv_path.exists():
+            reporter.advance(len(cs_refs))
+            g = ReferenceGraph.load(graph_persistence)
+        else:
+            # fill & save graph
+            graph_filler = ReferenceGraphFiller(InputOrder(order), degrade_labels)
+            for x, y in cs_refs:
+                r = {
+                    "dataset": benchmark_data.name,
+                    "model": model_config.name,
+                    "left_id": x.id.label,
+                    "left_source": x.id.source,
+                    "right_id": y.id.label,
+                    "right_source": y.id.source,
+                    "true_label": benchmark_data.true_matches.get((x.id, y.id), 0),
+                }
+                model_results[order].append(graph_filler(g, matcher, x, y, r))
+                reporter.advance(1)
+            graph_dir.mkdir(parents=True, exist_ok=True)
+            g.save(GmlGraphPersistence(graph_path))
+
+            # fill & save .csv results file
+            df = (
+                pl.DataFrame(
+                    data=model_results[order],
+                    schema_overrides=RESULT_SCHEMA_OVERRIDES,
+                )
+                .fill_nan(-1)
+                .fill_null(-1)
             )
-            .fill_nan(-1)
-            .fill_null(-1)
-        )
-        results_csv_path = graph_dir / f"{order}-result.csv"
-        df.write_csv(results_csv_path, include_header=True)
+            results_csv_path = graph_dir / f"{order}-result.csv"
+            df.write_csv(results_csv_path, include_header=True)
 
+        # compute metrics
         if _uses_binary_metrics(model_config, degrade_labels):
             true_matches = {cmp for cmp, label in cs_pair_gt.items() if label > 0}
             metrics = _compute_binary_classifier_metrics(true_matches, g, order)
@@ -254,6 +272,7 @@ def _eval_matching_unit(
                 **metrics,
             }
         )
+        # show plots
         if plot_root is not None:
             plot_predicted_graph(
                 PlotDir(plot_root, benchmark_data.name),
@@ -332,6 +351,12 @@ def _plot_ground_truths(
         "binary F1 metrics."
     ),
 )
+@click.option(
+    "--skip-existing",
+    is_flag=True,
+    default=False,
+    help="If a reference graph already exists, skip evaluation",
+)
 @workers_option()
 @click.pass_context
 def evaluate_matching(
@@ -342,6 +367,7 @@ def evaluate_matching(
     plot_dpi: int,
     input_orders: list[str],
     degrade_directional_labels: bool,
+    skip_existing: bool,
     workers: int | None,
 ):
     """Evaluate a matcher's quality in controlled settings."""
@@ -375,6 +401,7 @@ def evaluate_matching(
                 root_dir,
                 output_path,
                 degrade_directional_labels,
+                skip_existing,
                 plot_root,
                 plot_dpi,
             ),
