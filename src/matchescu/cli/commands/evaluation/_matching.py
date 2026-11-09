@@ -108,11 +108,11 @@ class ReferenceGraphFiller:
     ) -> dict:
         match self._input_order:
             case InputOrder.normal:
-                return self._add_normal(g, m, x, y)
+                return self._add_normal(g, m, x, y, record)
             case InputOrder.reverse:
-                return self._add_normal(g, m, x, y)
+                return self._add_normal(g, m, x, y, record)
             case InputOrder.both:
-                return self._add_both(g, m, x, y)
+                return self._add_both(g, m, x, y, record)
 
     def _add_normal(
         self,
