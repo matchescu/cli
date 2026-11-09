@@ -1,5 +1,5 @@
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import MagicMock, Mock
 
 import pytest
 from click.testing import CliRunner
@@ -16,7 +16,16 @@ A, B = RefId(1, "s"), RefId(2, "s")
 
 
 @pytest.fixture
-def dataset(monkeypatch):
+def matcher_mock():
+    call_mock = MagicMock(
+        side_effect=lambda x, y: MatchResult(x.id, y.id, 1, [0.1, 0.9])
+    )
+    matcher_inst = MagicMock(return_value=call_mock)
+    return matcher_inst
+
+
+@pytest.fixture
+def dataset(monkeypatch, matcher_mock):
     data = SimpleNamespace(
         name="ds",
         true_matches={(A, B): 1},
@@ -25,11 +34,7 @@ def dataset(monkeypatch):
         ),
     )
     monkeypatch.setattr(_matching, "_load_dataset", lambda *_: (data, [(A, B)]))
-    monkeypatch.setattr(
-        _matching,
-        "new_matcher",
-        lambda *_: lambda x, y: MatchResult(x.id, y.id, 1, [0.1, 0.9]),
-    )
+    monkeypatch.setattr(_matching, "new_matcher", matcher_mock)
     return data
 
 
@@ -40,10 +45,16 @@ def plot_predicted(monkeypatch):
     return mock
 
 
-def _run_unit(tmp_path, plot_root, model_type="binary", orders=("normal", "reverse")):
+def _run_unit(
+    tmp_path,
+    plot_root,
+    model_type="binary",
+    orders=("normal", "reverse"),
+    dataset_alias=None,
+):
     model = SimpleNamespace(name="m", type=model_type)
     return _matching._eval_matching_unit(
-        SimpleNamespace(),
+        SimpleNamespace(dataset_alias=dataset_alias),
         model,
         list(orders),
         1,
@@ -54,6 +65,16 @@ def _run_unit(tmp_path, plot_root, model_type="binary", orders=("normal", "rever
         120,
         UnitReporter("k"),
     )
+
+
+@pytest.mark.parametrize("alias,expected", [("expected", "expected"), (None, "ds")])
+def test_matcher_receives_dataset_alias(
+    dataset, plot_predicted, tmp_path, matcher_mock, alias, expected
+):
+    _run_unit(tmp_path, tmp_path / "plots", dataset_alias=alias)
+
+    assert matcher_mock.call_count == 1
+    assert matcher_mock.call_args[0][2] == expected
 
 
 def test_matching_unit_plots_one_graph_per_input_order(

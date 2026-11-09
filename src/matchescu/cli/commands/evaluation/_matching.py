@@ -201,12 +201,13 @@ def _eval_matching_unit(
     reporter: UnitReporter,
 ) -> list[dict]:
     """Evaluate one (dataset, model) unit: build graphs, save them, score them."""
-    try:
     benchmark_data, cs = _load_dataset(ds_config, root_dir, seed)
     cs_pair_gt = _comparison_labels(benchmark_data, cs)
     cs_refs = list(map(benchmark_data.id_table.get_all, cs))
 
-    matcher = new_matcher(model_config, root_dir, ds_config.dataset_alias or benchmark_data.name)
+    matcher = new_matcher(
+        model_config, root_dir, ds_config.dataset_alias or benchmark_data.name
+    )
     graphs = {order: ReferenceGraph(directed=True) for order in input_orders}
     model_results = {order: [] for order in input_orders}
     for x, y in cs_refs:
