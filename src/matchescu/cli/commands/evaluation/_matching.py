@@ -110,7 +110,7 @@ class ReferenceGraphFiller:
             case InputOrder.normal:
                 return self._add_normal(g, m, x, y, record)
             case InputOrder.reverse:
-                return self._add_normal(g, m, x, y, record)
+                return self._add_reverse(g, m, x, y, record)
             case InputOrder.both:
                 return self._add_both(g, m, x, y, record)
 
