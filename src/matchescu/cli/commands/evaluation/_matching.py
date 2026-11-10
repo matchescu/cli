@@ -113,6 +113,7 @@ class ReferenceGraphFiller:
                 return self._add_reverse(g, m, x, y, record)
             case InputOrder.both:
                 return self._add_both(g, m, x, y, record)
+        raise ValueError(f"Invalid input order: {self._input_order}")
 
     def _add_normal(
         self,
@@ -122,8 +123,8 @@ class ReferenceGraphFiller:
         y: EntityReference,
         record: dict | None = None,
     ) -> dict:
-        match_result = m(x, y)
-        g.add(self._optionally_degrade(match_result))
+        match_result = self._evaluate(m, x, y)
+        self._add(g, match_result)
         return self._put_record_attr(record, "normal", match_result.label)
 
     def _add_reverse(
@@ -134,8 +135,8 @@ class ReferenceGraphFiller:
         y: EntityReference,
         record: dict | None = None,
     ) -> dict:
-        match_result = m(y, x)
-        g.add(self._optionally_degrade(match_result))
+        match_result = self._evaluate(m, y, x)
+        self._add(g, match_result)
         return self._put_record_attr(record, "reverse", match_result.label)
 
     def _add_both(
@@ -146,8 +147,12 @@ class ReferenceGraphFiller:
         y: EntityReference,
         record: dict | None = None,
     ) -> dict:
-        record = self._add_normal(g, m, x, y, record)
-        return self._add_reverse(g, m, x, y, record)
+        normal = self._evaluate(m, x, y)
+        reverse = self._evaluate(m, y, x)
+        directions = self._resolve_directions(normal.label, reverse.label)
+        self._add_resolved(g, normal, reverse, directions)
+        record = self._put_record_attr(record, "normal", directions[0])
+        return self._put_record_attr(record, "reverse", directions[1])
 
     @staticmethod
     def _put_record_attr(record: dict | None, attr: str, value: object) -> dict:
@@ -155,12 +160,87 @@ class ReferenceGraphFiller:
         r[attr] = value
         return r
 
+    @staticmethod
+    def _resolve_directions(normal: int, reverse: int) -> tuple[int, int]:
+        # A matcher may contradict itself across input orders, but a reference
+        # graph holds one answer per comparison: a full match subsumes the other
+        # direction, and two directional matches add up to a full match.
+        match normal:
+            case 0:
+                return (1, 1) if reverse == 1 else (0, reverse)
+            case 1:
+                return 1, 1
+            case 2:
+                return (1, 1) if reverse else (2, 0)
+        raise ValueError(f"Invalid match label: {normal}")
+
+    @classmethod
+    def _add_resolved(
+        cls,
+        g: ReferenceGraph,
+        normal: MatchResult,
+        reverse: MatchResult,
+        directions: tuple[int, int],
+    ) -> None:
+        match directions:
+            case (0, 0):
+                return
+            case (1, 1):
+                source = normal if normal.label == 1 else reverse
+                cls._add_bidirectional_match(g, replace(source, label=1))
+            case (2, 0):
+                g.add(normal)
+            case (0, 2):
+                g.add(reverse)
+
+    @staticmethod
+    def _add_bidirectional_match(g: ReferenceGraph, result: MatchResult) -> None:
+        # ``ReferenceGraph.add`` mirrors a full match only for three-class
+        # results, so two-class ones need the mirrored edge here
+        g.add(result)
+        g.add(replace(result, left=result.right, right=result.left))
+
+    def _add(self, g: ReferenceGraph, result: MatchResult) -> None:
+        # only degradation changes arity, so plain binary results keep the
+        # graph's own single-edge treatment
+        if self._degrade_directional and result.label == 1:
+            self._add_bidirectional_match(g, result)
+            return
+        g.add(result)
+
+    def _evaluate(
+        self, m: Matcher, x: EntityReference, y: EntityReference
+    ) -> MatchResult:
+        return self._optionally_degrade(m(x, y))
+
     def _optionally_degrade(self, result: MatchResult) -> MatchResult:
         if not self._degrade_directional:
             return result
-        if result.label == 0 or result.label == 1:
-            return result
-        return replace(result, label=1)
+        return replace(
+            result,
+            label=self._degraded_label(result.label),
+            label_weights=self._collapse_weights(result.label_weights, result.label),
+        )
+
+    @staticmethod
+    def _degraded_label(label: int) -> int:
+        return min(label, 1)
+
+    @classmethod
+    def _collapse_weights(cls, weights: list[float], label: int) -> list[float]:
+        if len(weights) < 3:
+            return list(weights)
+        # everything in the middle is discarded, regardless of the number of elements
+        # extremes are ranked so that the degraded label keeps the larger share.
+        weights = sorted(weights)
+        low = weights[0]
+        high = weights[-1]
+        total = low + high
+        return (
+            [low / total, high / total]
+            if cls._degraded_label(label)
+            else [high / total, low / total]
+        )
 
 
 def _load_dataset(
@@ -288,7 +368,6 @@ def _eval_matching_unit(
                 .fill_nan(-1)
                 .fill_null(-1)
             )
-            results_csv_path = graph_dir / f"{order}-result.csv"
             df.write_csv(results_csv_path, include_header=True)
 
         # compute metrics

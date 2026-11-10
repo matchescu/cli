@@ -45,6 +45,16 @@ def plot_predicted(monkeypatch):
     return mock
 
 
+@pytest.fixture
+def command_units(monkeypatch):
+    monkeypatch.setattr(_matching, "count_comparison_space_rows", lambda *_: None)
+    unit = Mock(return_value=[{"dataset": "d1"}])
+    truth = Mock(return_value="ds")
+    monkeypatch.setattr(_matching, "_eval_matching_unit", unit)
+    monkeypatch.setattr(_matching, "_plot_ground_truth_unit", truth)
+    return truth, unit
+
+
 def _run_unit(
     tmp_path,
     plot_root,
@@ -65,6 +75,14 @@ def _run_unit(
         plot_root,
         120,
         UnitReporter("k"),
+    )
+
+
+def _invoke(eval_obj, tmp_path, *extra):
+    return CliRunner().invoke(
+        _matching.evaluate_matching,
+        ["-R", str(tmp_path), "-s", str(tmp_path / "out.csv"), "-w", "1", *extra],
+        obj=eval_obj,
     )
 
 
@@ -125,10 +143,8 @@ def test_ground_truth_unit_plots_comparison_space_labels(
         SimpleNamespace(), 5, tmp_path, tmp_path, 90, UnitReporter("k")
     )
 
-    assert (name, plot.call_args.args) == (
-        "ds",
-        (PlotDir(tmp_path, "ds"), {(A, B): 1}, 5, 90),
-    )
+    assert name == "ds"
+    assert plot.call_args.args == (PlotDir(tmp_path, "ds"), {(A, B): 1}, 5, 90)
 
 
 @pytest.mark.parametrize(
@@ -142,25 +158,8 @@ def test_evaluation_commands_expose_plot_options(command, option):
         obj={"verbose": False, "root_dir": None, "config": None},
     )
 
-    assert option in result.output and "--plot-dpi" in result.output
-
-
-def _invoke(eval_obj, tmp_path, *extra):
-    return CliRunner().invoke(
-        _matching.evaluate_matching,
-        ["-R", str(tmp_path), "-s", str(tmp_path / "out.csv"), "-w", "1", *extra],
-        obj=eval_obj,
-    )
-
-
-@pytest.fixture
-def command_units(monkeypatch):
-    monkeypatch.setattr(_matching, "count_comparison_space_rows", lambda *_: None)
-    unit = Mock(return_value=[{"dataset": "d1"}])
-    truth = Mock(return_value="ds")
-    monkeypatch.setattr(_matching, "_eval_matching_unit", unit)
-    monkeypatch.setattr(_matching, "_plot_ground_truth_unit", truth)
-    return truth, unit
+    assert option in result.output
+    assert "--plot-dpi" in result.output
 
 
 def test_command_plots_ground_truth_of_every_dataset_when_plots_requested(
