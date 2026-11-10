@@ -106,141 +106,58 @@ class ReferenceGraphFiller:
         y: EntityReference,
         record: dict | None,
     ) -> dict:
+        comparisons = self._comparisons(x, y)
+        edge_labels = {}
+        for left, right in comparisons.values():
+            edge_labels.update(self._add(g, m(left, right)))
+        record = {} if record is None else record
+        for column, (left, right) in comparisons.items():
+            record[column] = edge_labels.get((left.id, right.id), 0)
+        return record
+
+    def _comparisons(
+        self, x: EntityReference, y: EntityReference
+    ) -> dict[str, tuple[EntityReference, EntityReference]]:
         match self._input_order:
             case InputOrder.normal:
-                return self._add_normal(g, m, x, y, record)
+                return {"normal": (x, y)}
             case InputOrder.reverse:
-                return self._add_reverse(g, m, x, y, record)
+                return {"reverse": (y, x)}
             case InputOrder.both:
-                return self._add_both(g, m, x, y, record)
+                return {"normal": (x, y), "reverse": (y, x)}
         raise ValueError(f"Invalid input order: {self._input_order}")
 
-    def _add_normal(
-        self,
-        g: ReferenceGraph,
-        m: Matcher,
-        x: EntityReference,
-        y: EntityReference,
-        record: dict | None = None,
-    ) -> dict:
-        match_result = self._evaluate(m, x, y)
-        self._add(g, match_result)
-        return self._put_record_attr(record, "normal", match_result.label)
-
-    def _add_reverse(
-        self,
-        g: ReferenceGraph,
-        m: Matcher,
-        x: EntityReference,
-        y: EntityReference,
-        record: dict | None = None,
-    ) -> dict:
-        match_result = self._evaluate(m, y, x)
-        self._add(g, match_result)
-        return self._put_record_attr(record, "reverse", match_result.label)
-
-    def _add_both(
-        self,
-        g: ReferenceGraph,
-        m: Matcher,
-        x: EntityReference,
-        y: EntityReference,
-        record: dict | None = None,
-    ) -> dict:
-        normal = self._evaluate(m, x, y)
-        reverse = self._evaluate(m, y, x)
-        directions = self._resolve_directions(normal.label, reverse.label)
-        self._add_resolved(g, normal, reverse, directions)
-        record = self._put_record_attr(record, "normal", directions[0])
-        return self._put_record_attr(record, "reverse", directions[1])
+    def _add(self, g: ReferenceGraph, result: MatchResult) -> dict[tuple, int]:
+        multiclass = len(result.label_weights) > 2
+        if multiclass and self._degrade_directional:
+            result = self._degrade(result)
+            # a degraded result has two classes, so the graph won't mirror it
+            g.add(replace(result, left=result.right, right=result.left))
+        g.add(
+            result
+        )  # for the multiclass+degraded branch: result is mutated 2 lines above
+        return self._edge_labels(result, multiclass)
 
     @staticmethod
-    def _put_record_attr(record: dict | None, attr: str, value: object) -> dict:
-        r = record or {}
-        r[attr] = value
-        return r
+    def _edge_labels(result: MatchResult, multiclass: bool) -> dict[tuple, int]:
+        # what ``ReferenceGraph.add`` wrote: nothing for a non-match, and both
+        # directions for a full match of a multiclass matcher
+        if result.label == 0:
+            return {}
+        labels = {(result.left, result.right): result.label}
+        if multiclass and result.label == 1:
+            labels[(result.right, result.left)] = 1
+        return labels
 
     @staticmethod
-    def _resolve_directions(normal: int, reverse: int) -> tuple[int, int]:
-        # A matcher may contradict itself across input orders, but a reference
-        # graph holds one answer per comparison: a full match subsumes the other
-        # direction, and two directional matches add up to a full match.
-        match normal:
-            case 0:
-                return (1, 1) if reverse == 1 else (0, reverse)
-            case 1:
-                return 1, 1
-            case 2:
-                return (1, 1) if reverse else (2, 0)
-        raise ValueError(f"Invalid match label: {normal}")
-
-    @classmethod
-    def _add_resolved(
-        cls,
-        g: ReferenceGraph,
-        normal: MatchResult,
-        reverse: MatchResult,
-        directions: tuple[int, int],
-    ) -> None:
-        match directions:
-            case (0, 0):
-                return
-            case (1, 1):
-                source = normal if normal.label == 1 else reverse
-                cls._add_bidirectional_match(g, replace(source, label=1))
-            case (2, 0):
-                g.add(normal)
-            case (0, 2):
-                g.add(reverse)
-
-    @staticmethod
-    def _add_bidirectional_match(g: ReferenceGraph, result: MatchResult) -> None:
-        # ``ReferenceGraph.add`` mirrors a full match only for three-class
-        # results, so two-class ones need the mirrored edge here
-        g.add(result)
-        g.add(replace(result, left=result.right, right=result.left))
-
-    def _add(self, g: ReferenceGraph, result: MatchResult) -> None:
-        # only degradation changes arity, so plain binary results keep the
-        # graph's own single-edge treatment
-        if self._degrade_directional and result.label == 1:
-            self._add_bidirectional_match(g, result)
-            return
-        g.add(result)
-
-    def _evaluate(
-        self, m: Matcher, x: EntityReference, y: EntityReference
-    ) -> MatchResult:
-        return self._optionally_degrade(m(x, y))
-
-    def _optionally_degrade(self, result: MatchResult) -> MatchResult:
-        if not self._degrade_directional:
-            return result
-        return replace(
-            result,
-            label=self._degraded_label(result.label),
-            label_weights=self._collapse_weights(result.label_weights, result.label),
-        )
-
-    @staticmethod
-    def _degraded_label(label: int) -> int:
-        return min(label, 1)
-
-    @classmethod
-    def _collapse_weights(cls, weights: list[float], label: int) -> list[float]:
-        if len(weights) < 3:
-            return list(weights)
-        # everything in the middle is discarded, regardless of the number of elements
-        # extremes are ranked so that the degraded label keeps the larger share.
-        weights = sorted(weights)
-        low = weights[0]
-        high = weights[-1]
+    def _degrade(result: MatchResult) -> MatchResult:
+        # the classes between the extremes are noise; the larger extreme goes
+        # to the degraded label, so the weights never contradict it
+        low, *_, high = sorted(result.label_weights)
         total = low + high
-        return (
-            [low / total, high / total]
-            if cls._degraded_label(label)
-            else [high / total, low / total]
-        )
+        label = min(result.label, 1)
+        weights = [low / total, high / total] if label else [high / total, low / total]
+        return replace(result, label=label, label_weights=weights)
 
 
 def _load_dataset(
